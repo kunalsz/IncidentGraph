@@ -27,6 +27,43 @@ make seed
 make test
 ```
 
+## P1 scope
+
+Run `.venv/bin/python scripts/demo_inject.py --fixture payment_failure --run-p1`
+for the P0-to-P1 handoff. P1 projects the anchor and one-hop structural
+neighbors, capped at 40 projected nodes and 12 metric series. It computes
+windowed severity, direct-child span self-time, three-sigma flags within
+60 seconds of onset, and change proximity without LLM calls.
+
+Missing logs or traces and scope truncation produce incident-scoped
+`EvidenceGap` records. Service statistics use all matching windowed
+observations before output truncation; missing z-scores are not invented.
+
+## P2 initial ranking
+
+Run `.venv/bin/python scripts/demo_inject.py --fixture payment_failure --run-p2`
+for P0 through P2. P2 computes latency instability (empirical p99/p50),
+self-processing impact, maximum modality severity, anchor-rooted random walk,
+change proximity, and indicator gamma scores. Reciprocal rank fusion combines
+five rankings; missing signals contribute nothing and ties share average rank.
+Top-eight candidates plus every rule-flagged service become P3 branches.
+The component table is persisted as an incident-specific `Artifact`.
+
+Call edges point from caller to dependency, so the cause-seeking walk follows
+that direction. Dangling-node mass restarts at the anchor. Service span
+latencies are the current proxy for incoming-call latency; sparse fixtures
+are not production percentile estimates. Gamma is reported as evidence,
+not included as an extra fusion vote. Existing PageRank properties break
+exact fusion ties. Correlation pruning is not enabled because fixtures do
+not provide aligned raw series, so no correlation-based causal claim is made.
+
+Run `make eval` or `.venv/bin/python scripts/eval.py --fixtures --rank-only`
+for the deterministic top-three gate. Each case runs in an isolated graph,
+which is removed afterward. Payment, cart, and recommendation causes rank
+first on these three authored fixtures (seven candidates per case, zero LLM
+calls). These are smoke-test results, not external benchmark accuracy;
+end-to-end diagnosis and abstention evaluation require P3 through P6.
+
 ## Graph model (v2)
 
 Graph namespaces: `incidentgraph:demo` (read-only seed), 
@@ -39,7 +76,7 @@ Hypothesis, Evidence, EvidenceGap, Artifact, Detector.
 **Edges:** `DEPENDS_ON` (structural/frozen), `OWNED_BY`, `DEPLOYED_AT`,
 `CHANGED`, `OBSERVED_ON`, `AFFECTS`, `APPLIES_TO`, `REQUIRES_PARAMETER`,
 `MITIGATED_BY`, `HAS_EVIDENCE`, `CAUSES` (volatile), `CONTRADICTS`,
-`EXPANDED_TO`, `SIMILAR_TO`, … — full schema in
+`EXPANDED_TO`, `SIMILAR_TO`, and others. Full schema in
 [`backend/app/graph/schema.py`](backend/app/graph/schema.py).
 
 All temporal properties are epoch-ms integers; ids are slugs

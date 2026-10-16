@@ -83,6 +83,18 @@ class TestLogs:
         assert out["template_id"] == "boom"
 
 
+def test_preserves_optional_p1_statistics():
+    log = normalize.normalize_log({"id": "log:z", "ts": 1000, "z": -4})
+    metric = normalize.normalize_metric_anomaly({
+        "id": "metric:baseline", "ts": 1000, "metric": "latency",
+        "value": 18, "baseline_mean": 10, "baseline_std": 2,
+    })
+    assert log["z"] == -4
+    assert metric["value"] == 18
+    assert metric["baseline_mean"] == 10
+    assert metric["baseline_std"] == 2
+
+
 class TestMetricAnomaly:
     def test_normalizes_ts(self):
         out = normalize.normalize_metric_anomaly({

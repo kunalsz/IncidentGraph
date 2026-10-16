@@ -1,0 +1,697 @@
+{
+  "fixture_version": 1,
+  "_provenance": "Synthetic authored telemetry derived from the existing OTel Demo scenario descriptions and runbooks in backend/app/seed/topology.json: cartFailure (https://opentelemetry.io/docs/demo/feature-flags/). Not captured OTel telemetry, a benchmark reproduction, or a reproduced benchmark result. All durations, metrics, logs, and times are synthetic. Timestamps are epoch-ms UTC; onset 2026-10-17T10:00:00Z.",
+  "_evaluation": {
+    "mode": "P2 rank-only",
+    "trace_samples": "Six incident-window requests: four normal and two slow. Sparse synthetic samples exercise empirical p99/p50 instability, not production percentile estimation. Slow root spans have increased local self time while dependency and symptom-service local self times remain stable."
+  },
+  "incident": {
+    "id": "incident:INC-1002",
+    "symptom": "checkout latency up",
+    "start_ts": 1792231200000,
+    "anchor_alert": "alert:INC-1002/a1",
+    "anchor_service": "service:checkout"
+  },
+  "graph_writes": [
+    {
+      "node": "Alert",
+      "props": {
+        "id": "alert:INC-1002/a1",
+        "kind": "latency",
+        "severity": "critical",
+        "value": 1570,
+        "threshold": 400,
+        "unit": "ms",
+        "ts": 1792231200000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "ConfigChange",
+      "props": {
+        "id": "config:INC-1002/c1",
+        "flag": "cartFailure",
+        "value": "true",
+        "ts": 1792230900000
+      },
+      "edge": [
+        "CHANGED",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1002/l1",
+        "level": "error",
+        "template_id": "cart_cart_1",
+        "message": "cartFailure enabled: injected GetCart failure after healthy cache read; fault handling delayed response",
+        "service_id": "service:cart",
+        "ts": 1792231202000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1002/l2",
+        "level": "warning",
+        "template_id": "cart_checkout_2",
+        "message": "cart RPC exceeded latency budget; waiting for upstream response",
+        "service_id": "service:checkout",
+        "ts": 1792231204000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1002/l3",
+        "level": "info",
+        "template_id": "cart_cart_3",
+        "message": "Unaffected request completed successfully in 30ms",
+        "service_id": "service:cart",
+        "ts": 1792231206000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1002/l4",
+        "level": "info",
+        "template_id": "cart_cart_cache_4",
+        "message": "Request completed successfully; no retries or resource pressure",
+        "service_id": "service:cart-cache",
+        "ts": 1792231208000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1002/l5",
+        "level": "info",
+        "template_id": "cart_payment_5",
+        "message": "Request completed successfully; no retries or resource pressure",
+        "service_id": "service:payment",
+        "ts": 1792231210000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m1",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 1500,
+        "z": 7.35,
+        "direction": "up",
+        "baseline_median": 30,
+        "baseline_iqr": 270.0,
+        "baseline_mean": 30,
+        "baseline_std": 200,
+        "gamma": 5.44,
+        "delta": "30->1500",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m2",
+        "metric": "rpc_server_duration_p50_ms",
+        "value": 32,
+        "z": 0.4,
+        "direction": "stable",
+        "baseline_median": 30,
+        "baseline_iqr": 6.75,
+        "baseline_mean": 30,
+        "baseline_std": 5,
+        "gamma": 0.3,
+        "delta": "30->32",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m3",
+        "metric": "rpc_client_duration_p99_ms",
+        "value": 1510,
+        "z": 5.84,
+        "direction": "up",
+        "baseline_median": 50,
+        "baseline_iqr": 337.5,
+        "baseline_mean": 50,
+        "baseline_std": 250,
+        "gamma": 4.33,
+        "delta": "50->1510",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m4",
+        "metric": "rpc_server_error_ratio",
+        "value": 0.32,
+        "z": 7.75,
+        "direction": "up",
+        "baseline_median": 0.01,
+        "baseline_iqr": 0.05,
+        "baseline_mean": 0.01,
+        "baseline_std": 0.04,
+        "gamma": 5.74,
+        "delta": "0.01->0.32",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m5",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 6,
+        "z": 0.0,
+        "direction": "stable",
+        "baseline_median": 6,
+        "baseline_iqr": 2.7,
+        "baseline_mean": 6,
+        "baseline_std": 2,
+        "gamma": 0.0,
+        "delta": "6->6",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1002/m6",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 40,
+        "z": 0.0,
+        "direction": "stable",
+        "baseline_median": 40,
+        "baseline_iqr": 6.75,
+        "baseline_mean": 40,
+        "baseline_std": 5,
+        "gamma": 0.0,
+        "delta": "40->40",
+        "ts": 1792231260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t01-1",
+        "trace_id": "tr-1002-01",
+        "span_id": "sp-1002-01-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 100000,
+        "status": "ok",
+        "service_id": "service:checkout",
+        "ts": 1792231210000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t01-2",
+        "trace_id": "tr-1002-01",
+        "span_id": "sp-1002-01-2",
+        "parent_id": "sp-1002-01-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 30000,
+        "status": "ok",
+        "service_id": "service:cart",
+        "ts": 1792231210005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t01-3",
+        "trace_id": "tr-1002-01",
+        "span_id": "sp-1002-01-3",
+        "parent_id": "sp-1002-01-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231210007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t01-4",
+        "trace_id": "tr-1002-01",
+        "span_id": "sp-1002-01-4",
+        "parent_id": "sp-1002-01-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231210040
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t02-1",
+        "trace_id": "tr-1002-02",
+        "span_id": "sp-1002-02-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 102000,
+        "status": "ok",
+        "service_id": "service:checkout",
+        "ts": 1792231218000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t02-2",
+        "trace_id": "tr-1002-02",
+        "span_id": "sp-1002-02-2",
+        "parent_id": "sp-1002-02-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 32000,
+        "status": "ok",
+        "service_id": "service:cart",
+        "ts": 1792231218005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t02-3",
+        "trace_id": "tr-1002-02",
+        "span_id": "sp-1002-02-3",
+        "parent_id": "sp-1002-02-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231218007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t02-4",
+        "trace_id": "tr-1002-02",
+        "span_id": "sp-1002-02-4",
+        "parent_id": "sp-1002-02-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231218042
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t03-1",
+        "trace_id": "tr-1002-03",
+        "span_id": "sp-1002-03-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 98000,
+        "status": "ok",
+        "service_id": "service:checkout",
+        "ts": 1792231226000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t03-2",
+        "trace_id": "tr-1002-03",
+        "span_id": "sp-1002-03-2",
+        "parent_id": "sp-1002-03-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 28000,
+        "status": "ok",
+        "service_id": "service:cart",
+        "ts": 1792231226005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t03-3",
+        "trace_id": "tr-1002-03",
+        "span_id": "sp-1002-03-3",
+        "parent_id": "sp-1002-03-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231226007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t03-4",
+        "trace_id": "tr-1002-03",
+        "span_id": "sp-1002-03-4",
+        "parent_id": "sp-1002-03-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231226038
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t04-1",
+        "trace_id": "tr-1002-04",
+        "span_id": "sp-1002-04-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 101000,
+        "status": "ok",
+        "service_id": "service:checkout",
+        "ts": 1792231234000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t04-2",
+        "trace_id": "tr-1002-04",
+        "span_id": "sp-1002-04-2",
+        "parent_id": "sp-1002-04-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 31000,
+        "status": "ok",
+        "service_id": "service:cart",
+        "ts": 1792231234005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t04-3",
+        "trace_id": "tr-1002-04",
+        "span_id": "sp-1002-04-3",
+        "parent_id": "sp-1002-04-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231234007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t04-4",
+        "trace_id": "tr-1002-04",
+        "span_id": "sp-1002-04-4",
+        "parent_id": "sp-1002-04-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231234041
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t05-1",
+        "trace_id": "tr-1002-05",
+        "span_id": "sp-1002-05-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 1270000,
+        "status": "error",
+        "service_id": "service:checkout",
+        "ts": 1792231242000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t05-2",
+        "trace_id": "tr-1002-05",
+        "span_id": "sp-1002-05-2",
+        "parent_id": "sp-1002-05-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 1200000,
+        "status": "error",
+        "service_id": "service:cart",
+        "ts": 1792231242005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t05-3",
+        "trace_id": "tr-1002-05",
+        "span_id": "sp-1002-05-3",
+        "parent_id": "sp-1002-05-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231242007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t05-4",
+        "trace_id": "tr-1002-05",
+        "span_id": "sp-1002-05-4",
+        "parent_id": "sp-1002-05-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231243210
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t06-1",
+        "trace_id": "tr-1002-06",
+        "span_id": "sp-1002-06-1",
+        "parent_id": "",
+        "op": "POST /api/checkout",
+        "duration_us": 1570000,
+        "status": "error",
+        "service_id": "service:checkout",
+        "ts": 1792231250000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:checkout"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t06-2",
+        "trace_id": "tr-1002-06",
+        "span_id": "sp-1002-06-2",
+        "parent_id": "sp-1002-06-1",
+        "op": "oteldemo.CartService/GetCart",
+        "duration_us": 1500000,
+        "status": "error",
+        "service_id": "service:cart",
+        "ts": 1792231250005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t06-3",
+        "trace_id": "tr-1002-06",
+        "span_id": "sp-1002-06-3",
+        "parent_id": "sp-1002-06-2",
+        "op": "GET cart",
+        "duration_us": 5000,
+        "status": "ok",
+        "service_id": "service:cart-cache",
+        "ts": 1792231250007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:cart-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1002/t06-4",
+        "trace_id": "tr-1002-06",
+        "span_id": "sp-1002-06-4",
+        "parent_id": "sp-1002-06-1",
+        "op": "oteldemo.PaymentService/Charge",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:payment",
+        "ts": 1792231251510
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:payment"
+      ]
+    }
+  ],
+  "expected": {
+    "root_cause_service": "service:cart",
+    "must_mention": [
+      "service:cart",
+      "service:checkout"
+    ],
+    "must_not_blame": [
+      "service:checkout",
+      "service:cart-cache",
+      "service:payment"
+    ],
+    "expected_evidence": [
+      "alert:INC-1002/a1",
+      "log:INC-1002/l1",
+      "metric:INC-1002/m1",
+      "config:INC-1002/c1"
+    ]
+  }
+}

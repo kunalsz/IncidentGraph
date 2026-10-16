@@ -123,6 +123,7 @@ def normalize_log(raw: dict) -> dict:
         "message": "\n".join(lines),
         "service_id": raw.get("service_id"),
         "is_error": is_error_log(raw.get("level", "info")),
+        **({"z": raw["z"]} if "z" in raw else {}),
     }
 
 
@@ -163,4 +164,6 @@ def normalize_metric_anomaly(raw: dict) -> dict:
         "baseline_iqr": raw.get("baseline_iqr"),
         "gamma": raw.get("gamma"),
         "delta": raw.get("delta"),
+        **{key: raw[key] for key in ("value", "baseline_mean", "baseline_std")
+           if key in raw},
     }

@@ -1,0 +1,697 @@
+{
+  "fixture_version": 1,
+  "_provenance": "Synthetic authored telemetry derived from the existing OTel Demo scenario descriptions and runbooks in backend/app/seed/topology.json: recommendationCacheFailure (https://opentelemetry.io/docs/demo/feature-flags/). Not captured OTel telemetry, a benchmark reproduction, or a reproduced benchmark result. All durations, metrics, logs, and times are synthetic. Timestamps are epoch-ms UTC; onset 2026-10-18T11:00:00Z.",
+  "_evaluation": {
+    "mode": "P2 rank-only",
+    "trace_samples": "Six incident-window requests: four normal and two slow. Sparse synthetic samples exercise empirical p99/p50 instability, not production percentile estimation. Slow root spans have increased local self time while dependency and symptom-service local self times remain stable."
+  },
+  "incident": {
+    "id": "incident:INC-1003",
+    "symptom": "frontend latency up",
+    "start_ts": 1792321200000,
+    "anchor_alert": "alert:INC-1003/a1",
+    "anchor_service": "service:frontend"
+  },
+  "graph_writes": [
+    {
+      "node": "Alert",
+      "props": {
+        "id": "alert:INC-1003/a1",
+        "kind": "latency",
+        "severity": "critical",
+        "value": 2270,
+        "threshold": 400,
+        "unit": "ms",
+        "ts": 1792321200000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "ConfigChange",
+      "props": {
+        "id": "config:INC-1003/c1",
+        "flag": "recommendationCacheFailure",
+        "value": "true",
+        "ts": 1792320900000
+      },
+      "edge": [
+        "CHANGED",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1003/l1",
+        "level": "warning",
+        "template_id": "recommendation_recommendation_1",
+        "message": "In-process recommendation cache growth causing memory pressure and slow computation; external cache healthy",
+        "service_id": "service:recommendation",
+        "ts": 1792321202000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1003/l2",
+        "level": "warning",
+        "template_id": "recommendation_frontend_2",
+        "message": "recommendation RPC exceeded latency budget; waiting for upstream response",
+        "service_id": "service:frontend",
+        "ts": 1792321204000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1003/l3",
+        "level": "info",
+        "template_id": "recommendation_recommendation_3",
+        "message": "Unaffected request completed successfully in 40ms",
+        "service_id": "service:recommendation",
+        "ts": 1792321206000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1003/l4",
+        "level": "info",
+        "template_id": "recommendation_recommendation_cache_4",
+        "message": "Request completed successfully; no retries or resource pressure",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321208000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "LogEvent",
+      "props": {
+        "id": "log:INC-1003/l5",
+        "level": "info",
+        "template_id": "recommendation_product_catalog_5",
+        "message": "Request completed successfully; no retries or resource pressure",
+        "service_id": "service:product-catalog",
+        "ts": 1792321210000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m1",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 2200,
+        "z": 10.8,
+        "direction": "up",
+        "baseline_median": 40,
+        "baseline_iqr": 270.0,
+        "baseline_mean": 40,
+        "baseline_std": 200,
+        "gamma": 8.0,
+        "delta": "40->2200",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m2",
+        "metric": "rpc_server_duration_p50_ms",
+        "value": 42,
+        "z": 0.4,
+        "direction": "stable",
+        "baseline_median": 40,
+        "baseline_iqr": 6.75,
+        "baseline_mean": 40,
+        "baseline_std": 5,
+        "gamma": 0.3,
+        "delta": "40->42",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m3",
+        "metric": "rpc_client_duration_p99_ms",
+        "value": 2210,
+        "z": 8.6,
+        "direction": "up",
+        "baseline_median": 60,
+        "baseline_iqr": 337.5,
+        "baseline_mean": 60,
+        "baseline_std": 250,
+        "gamma": 6.37,
+        "delta": "60->2210",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m4",
+        "metric": "container_memory_working_set_bytes",
+        "value": 805306368,
+        "z": 8.0,
+        "direction": "up",
+        "baseline_median": 268435456,
+        "baseline_iqr": 90596966.4,
+        "baseline_mean": 268435456,
+        "baseline_std": 67108864,
+        "gamma": 5.93,
+        "delta": "268435456->805306368",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m5",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 6,
+        "z": 0.0,
+        "direction": "stable",
+        "baseline_median": 6,
+        "baseline_iqr": 2.7,
+        "baseline_mean": 6,
+        "baseline_std": 2,
+        "gamma": 0.0,
+        "delta": "6->6",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {
+        "id": "metric:INC-1003/m6",
+        "metric": "rpc_server_duration_p99_ms",
+        "value": 40,
+        "z": 0.0,
+        "direction": "stable",
+        "baseline_median": 40,
+        "baseline_iqr": 6.75,
+        "baseline_mean": 40,
+        "baseline_std": 5,
+        "gamma": 0.0,
+        "delta": "40->40",
+        "ts": 1792321260000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t01-1",
+        "trace_id": "tr-1003-01",
+        "span_id": "sp-1003-01-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 70000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321210000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t01-2",
+        "trace_id": "tr-1003-01",
+        "span_id": "sp-1003-01-2",
+        "parent_id": "sp-1003-01-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 40000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321210005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t01-3",
+        "trace_id": "tr-1003-01",
+        "span_id": "sp-1003-01-3",
+        "parent_id": "sp-1003-01-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321210007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t01-4",
+        "trace_id": "tr-1003-01",
+        "span_id": "sp-1003-01-4",
+        "parent_id": "sp-1003-01-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321210012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t02-1",
+        "trace_id": "tr-1003-02",
+        "span_id": "sp-1003-02-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 72000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321218000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t02-2",
+        "trace_id": "tr-1003-02",
+        "span_id": "sp-1003-02-2",
+        "parent_id": "sp-1003-02-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 42000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321218005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t02-3",
+        "trace_id": "tr-1003-02",
+        "span_id": "sp-1003-02-3",
+        "parent_id": "sp-1003-02-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321218007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t02-4",
+        "trace_id": "tr-1003-02",
+        "span_id": "sp-1003-02-4",
+        "parent_id": "sp-1003-02-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321218012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t03-1",
+        "trace_id": "tr-1003-03",
+        "span_id": "sp-1003-03-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 68000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321226000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t03-2",
+        "trace_id": "tr-1003-03",
+        "span_id": "sp-1003-03-2",
+        "parent_id": "sp-1003-03-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 38000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321226005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t03-3",
+        "trace_id": "tr-1003-03",
+        "span_id": "sp-1003-03-3",
+        "parent_id": "sp-1003-03-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321226007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t03-4",
+        "trace_id": "tr-1003-03",
+        "span_id": "sp-1003-03-4",
+        "parent_id": "sp-1003-03-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321226012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t04-1",
+        "trace_id": "tr-1003-04",
+        "span_id": "sp-1003-04-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 71000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321234000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t04-2",
+        "trace_id": "tr-1003-04",
+        "span_id": "sp-1003-04-2",
+        "parent_id": "sp-1003-04-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 41000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321234005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t04-3",
+        "trace_id": "tr-1003-04",
+        "span_id": "sp-1003-04-3",
+        "parent_id": "sp-1003-04-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321234007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t04-4",
+        "trace_id": "tr-1003-04",
+        "span_id": "sp-1003-04-4",
+        "parent_id": "sp-1003-04-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321234012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t05-1",
+        "trace_id": "tr-1003-05",
+        "span_id": "sp-1003-05-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 1830000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321242000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t05-2",
+        "trace_id": "tr-1003-05",
+        "span_id": "sp-1003-05-2",
+        "parent_id": "sp-1003-05-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 1800000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321242005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t05-3",
+        "trace_id": "tr-1003-05",
+        "span_id": "sp-1003-05-3",
+        "parent_id": "sp-1003-05-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321242007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t05-4",
+        "trace_id": "tr-1003-05",
+        "span_id": "sp-1003-05-4",
+        "parent_id": "sp-1003-05-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321242012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t06-1",
+        "trace_id": "tr-1003-06",
+        "span_id": "sp-1003-06-1",
+        "parent_id": "",
+        "op": "GET /api/recommendations",
+        "duration_us": 2230000,
+        "status": "ok",
+        "service_id": "service:frontend",
+        "ts": 1792321250000
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:frontend"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t06-2",
+        "trace_id": "tr-1003-06",
+        "span_id": "sp-1003-06-2",
+        "parent_id": "sp-1003-06-1",
+        "op": "oteldemo.RecommendationService/ListRecommendations",
+        "duration_us": 2200000,
+        "status": "ok",
+        "service_id": "service:recommendation",
+        "ts": 1792321250005
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t06-3",
+        "trace_id": "tr-1003-06",
+        "span_id": "sp-1003-06-3",
+        "parent_id": "sp-1003-06-2",
+        "op": "GET recommendations",
+        "duration_us": 4000,
+        "status": "ok",
+        "service_id": "service:recommendation-cache",
+        "ts": 1792321250007
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:recommendation-cache"
+      ]
+    },
+    {
+      "node": "Span",
+      "props": {
+        "id": "span:INC-1003/t06-4",
+        "trace_id": "tr-1003-06",
+        "span_id": "sp-1003-06-4",
+        "parent_id": "sp-1003-06-2",
+        "op": "oteldemo.ProductCatalogService/ListProducts",
+        "duration_us": 8000,
+        "status": "ok",
+        "service_id": "service:product-catalog",
+        "ts": 1792321250012
+      },
+      "edge": [
+        "OBSERVED_ON",
+        "service:product-catalog"
+      ]
+    }
+  ],
+  "expected": {
+    "root_cause_service": "service:recommendation",
+    "must_mention": [
+      "service:recommendation",
+      "service:frontend"
+    ],
+    "must_not_blame": [
+      "service:frontend",
+      "service:recommendation-cache",
+      "service:product-catalog"
+    ],
+    "expected_evidence": [
+      "alert:INC-1003/a1",
+      "log:INC-1003/l1",
+      "metric:INC-1003/m1",
+      "config:INC-1003/c1"
+    ]
+  }
+}

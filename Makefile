@@ -24,4 +24,4 @@ surface:
 	$(PY) scripts/measure_tool_surface.py
 
 eval:
-	$(PY) scripts/eval.py
+	$(PY) scripts/eval.py --fixtures --rank-only

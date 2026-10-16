@@ -32,6 +32,55 @@ class Investigation(BaseModel):
     anchor_alert: str | None = None
 
 
+class ScopeService(BaseModel):
+    id: str
+    criticality: float = 0.0
+    sev_m: float = 0.0
+    sev_l: float = 0.0
+    sev_tc: float = 0.0
+    self_time_ms: float = 0.0
+    self_time_flag: bool = False
+    nsigma_evidence: list[str] = Field(default_factory=list)
+    hours_since_change: float | None = None
+    deploy_proximity: float = 0.0
+
+
+class ScopeResult(BaseModel):
+    incident_id: str
+    anchor_service: str
+    window: InvestigationWindow
+    services: list[ScopeService]
+    nodes: list[dict]
+    edges: list[dict]
+    evidence_gaps: list[dict]
+    n_series_in_scope: int
+    truncated: bool
+
+
+class RankedCandidate(BaseModel):
+    id: str
+    rank: int
+    score: float
+    components: dict[str, float]
+    component_ranks: dict[str, float]
+    evidence: list[str]
+    rule_flags: list[str]
+    selected: bool
+
+
+class RankResult(BaseModel):
+    incident_id: str
+    stage: Literal["strix"] = "strix"
+    iteration: int = 0
+    candidates: list[RankedCandidate]
+    branch_ids: list[str]
+    indicators: list[dict]
+    audit: list[dict]
+    n_candidates: int
+    truncated: bool
+    config: dict
+
+
 class AgentRunResult(BaseModel):
     """LATS-style frozen handoff (summary/confidence/completeness/escalate)."""
     summary: str
