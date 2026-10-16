@@ -1,0 +1,25 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: incidentgraph-falkordb
+    ports:
+      - "6380:6379"   # redis protocol (graph queries)
+      - "3001:3000"   # bundled FalkorDB Browser UI
+    volumes:
+      - falkordb_data:/data
+
+  # api and web are added on Day 2/3 (engine + UI phases)
+  # api:
+  #   build: ./backend
+  #   ports: ["8000:8000"]
+  #   environment:
+  #     - FALKORDB_HOST=falkordb
+  #     - FALKORDB_PORT=6379
+  #   depends_on: [falkordb]
+  # web:
+  #   build: ./frontend
+  #   ports: ["3000:3000"]
+  #   depends_on: [api]
+
+volumes:
+  falkordb_data:

@@ -1,0 +1,18 @@
+[project]
+name = "incidentgraph-backend"
+version = "0.1.0"
+description = "IncidentGraph — explainable AI incident investigator on FalkorDB"
+requires-python = ">=3.10"
+dependencies = [
+    "falkordb>=1.8.0",
+    "pydantic>=2.0",
+    "pyyaml",
+    "httpx",
+]
+
+[project.optional-dependencies]
+api = ["fastapi", "uvicorn[standard]"]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]

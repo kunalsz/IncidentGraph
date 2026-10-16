@@ -1,0 +1,207 @@
+{
+  "_provenance": "Derived from the OpenTelemetry Astronomy Shop demo architecture (https://opentelemetry.io/docs/demo/architecture/). Levels = topological depth over DEPENDS_ON (RADICE level(·) seed; P4 derives/overrides automatically).",
+  "services": [
+    {"id": "service:frontend", "name": "frontend", "aliases": ["web", "front-end", "ui", "front end", "frontdoor"], "criticality": 0.9, "level": 0},
+    {"id": "service:checkout", "name": "checkout", "aliases": ["checkout service", "orders", "order service"], "criticality": 0.95, "level": 1},
+    {"id": "service:payment", "name": "payment", "aliases": ["payments", "payment service", "pay", "billing"], "criticality": 0.95, "level": 2},
+    {"id": "service:cart", "name": "cart", "aliases": ["carts", "cart service", "basket"], "criticality": 0.8, "level": 2},
+    {"id": "service:cart-cache", "name": "cart-cache", "aliases": ["valkey", "redis cart", "cart store", "cart-store"], "criticality": 0.8, "level": 3},
+    {"id": "service:recommendation", "name": "recommendation", "aliases": ["recs", "recommendations", "recommendation service", "recommender"], "criticality": 0.6, "level": 2},
+    {"id": "service:recommendation-cache", "name": "recommendation-cache", "aliases": ["recs cache", "recommendation cache"], "criticality": 0.5, "level": 3},
+    {"id": "service:shipping", "name": "shipping", "aliases": ["fulfillment", "shipping service"], "criticality": 0.7, "level": 2},
+    {"id": "service:quote", "name": "quote", "aliases": ["quotes", "shipping quotes", "quote service"], "criticality": 0.5, "level": 3},
+    {"id": "service:currency", "name": "currency", "aliases": ["fx", "currency service", "exchange rates"], "criticality": 0.6, "level": 3},
+    {"id": "service:product-catalog", "name": "product-catalog", "aliases": ["catalog", "catalogue", "products", "product catalog"], "criticality": 0.7, "level": 2},
+    {"id": "service:kafka", "name": "kafka", "aliases": ["message queue", "event bus", "broker"], "criticality": 0.85, "level": 2}
+  ],
+  "depends_on": [
+    {"from": "service:frontend", "to": "service:checkout", "calls_per_min": 120, "p99_ms": 400},
+    {"from": "service:frontend", "to": "service:cart", "calls_per_min": 300, "p99_ms": 150},
+    {"from": "service:frontend", "to": "service:product-catalog", "calls_per_min": 600, "p99_ms": 120},
+    {"from": "service:frontend", "to": "service:recommendation", "calls_per_min": 180, "p99_ms": 200},
+    {"from": "service:frontend", "to": "service:shipping", "calls_per_min": 60, "p99_ms": 300},
+    {"from": "service:frontend", "to": "service:currency", "calls_per_min": 90, "p99_ms": 100},
+    {"from": "service:checkout", "to": "service:payment", "calls_per_min": 240, "p99_ms": 200},
+    {"from": "service:checkout", "to": "service:cart", "calls_per_min": 240, "p99_ms": 100},
+    {"from": "service:checkout", "to": "service:product-catalog", "calls_per_min": 240, "p99_ms": 90},
+    {"from": "service:checkout", "to": "service:currency", "calls_per_min": 240, "p99_ms": 80},
+    {"from": "service:checkout", "to": "service:kafka", "calls_per_min": 240, "p99_ms": 60},
+    {"from": "service:cart", "to": "service:cart-cache", "calls_per_min": 550, "p99_ms": 40},
+    {"from": "service:recommendation", "to": "service:recommendation-cache", "calls_per_min": 400, "p99_ms": 35},
+    {"from": "service:recommendation", "to": "service:product-catalog", "calls_per_min": 200, "p99_ms": 80},
+    {"from": "service:recommendation", "to": "service:kafka", "calls_per_min": 120, "p99_ms": 50},
+    {"from": "service:shipping", "to": "service:currency", "calls_per_min": 60, "p99_ms": 90},
+    {"from": "service:shipping", "to": "service:quote", "calls_per_min": 60, "p99_ms": 250}
+  ],
+  "teams": [
+    {"id": "team:checkout", "name": "Checkout", "oncall_handle": "@oncall-checkout"},
+    {"id": "team:payments", "name": "Payments", "oncall_handle": "@oncall-payments"},
+    {"id": "team:commerce", "name": "Commerce Core", "oncall_handle": "@oncall-commerce"},
+    {"id": "team:discovery", "name": "Discovery", "oncall_handle": "@oncall-discovery"},
+    {"id": "team:logistics", "name": "Logistics", "oncall_handle": "@oncall-logistics"},
+    {"id": "team:platform", "name": "Platform", "oncall_handle": "@oncall-platform"}
+  ],
+  "owned_by": {
+    "service:frontend": "team:platform",
+    "service:checkout": "team:checkout",
+    "service:payment": "team:payments",
+    "service:cart": "team:commerce",
+    "service:cart-cache": "team:commerce",
+    "service:recommendation": "team:discovery",
+    "service:recommendation-cache": "team:discovery",
+    "service:shipping": "team:logistics",
+    "service:quote": "team:logistics",
+    "service:currency": "team:logistics",
+    "service:product-catalog": "team:commerce",
+    "service:kafka": "team:platform"
+  },
+  "instances": [
+    {"id": "instance:frontend-9f4b2-c7x1d", "name": "frontend-9f4b2-c7x1d", "service_id": "service:frontend", "node": "node-a"},
+    {"id": "instance:checkout-8b3c1-k9m2p", "name": "checkout-8b3c1-k9m2p", "service_id": "service:checkout", "node": "node-a"},
+    {"id": "instance:payment-7d9f4-x2v4b", "name": "payment-7d9f4-x2v4b", "service_id": "service:payment", "node": "node-b"},
+    {"id": "instance:payment-7d9f4-z8n6w", "name": "payment-7d9f4-z8n6w", "service_id": "service:payment", "node": "node-c"},
+    {"id": "instance:cart-5e2a8-q1r5t", "name": "cart-5e2a8-q1r5t", "service_id": "service:cart", "node": "node-b"},
+    {"id": "instance:cart-cache-2c6d9-h4j7l", "name": "cart-cache-2c6d9-h4j7l", "service_id": "service:cart-cache", "node": "node-b"},
+    {"id": "instance:recommendation-4a1b3-s9v2k", "name": "recommendation-4a1b3-s9v2k", "service_id": "service:recommendation", "node": "node-c"},
+    {"id": "instance:recommendation-cache-8f3e5-n6m8p", "name": "recommendation-cache-8f3e5-n6m8p", "service_id": "service:recommendation-cache", "node": "node-c"},
+    {"id": "instance:shipping-6g4h2-w3x9y", "name": "shipping-6g4h2-w3x9y", "service_id": "service:shipping", "node": "node-a"},
+    {"id": "instance:currency-1j5k8-d2f4g", "name": "currency-1j5k8-d2f4g", "service_id": "service:currency", "node": "node-b"},
+    {"id": "instance:product-catalog-3l7m2-t6u8i", "name": "product-catalog-3l7m2-t6u8i", "service_id": "service:product-catalog", "node": "node-a"},
+    {"id": "instance:quote-9p2q5-r5s7t", "name": "quote-9p2q5-r5s7t", "service_id": "service:quote", "node": "node-c"},
+    {"id": "instance:kafka-4r8s2-y1z3x", "name": "kafka-4r8s2-y1z3x", "service_id": "service:kafka", "node": "node-a"}
+  ],
+  "runbooks": [
+    {
+      "id": "runbook:payment-failures",
+      "title": "Payment service failures / checkout errors",
+      "applies_to": ["service:payment"],
+      "params": [
+        {"id": "param:payment-primary", "name": "payment_primary", "kind": "db"},
+        {"id": "param:payment-replicas", "name": "replica_count", "kind": "cluster"}
+      ],
+      "steps": [
+        {
+          "step": 1,
+          "action": "Check payment error rate and connection health",
+          "validate_cmd": "kubectl get pods -l app=payment -o wide",
+          "risk": "read-only",
+          "undo": "none"
+        },
+        {
+          "step": 2,
+          "action": "If flag paymentFailure or paymentUnreachable is enabled, disable it in flagd",
+          "validate_cmd": "kubectl get configmap flagd-config -o yaml | grep -A2 paymentFailure",
+          "risk": "low - feature flag toggle",
+          "undo": "re-enable the flag"
+        },
+        {
+          "step": 3,
+          "action": "If error rate remains, roll back the latest payment deployment",
+          "validate_cmd": "kubectl rollout history deployment/payment",
+          "risk": "medium - deployment rollback",
+          "undo": "re-apply the rolled-back version"
+        }
+      ],
+      "last_reviewed": 1789000000000
+    },
+    {
+      "id": "runbook:cart-store-failures",
+      "title": "Cart store / cart-cache failures",
+      "applies_to": ["service:cart", "service:cart-cache"],
+      "params": [
+        {"id": "param:cart-store-endpoint", "name": "cart_store_endpoint", "kind": "db"}
+      ],
+      "steps": [
+        {
+          "step": 1,
+          "action": "Check cart-cache (valkey) health and memory",
+          "validate_cmd": "kubectl exec deploy/cart-cache -- valkey-cli info memory",
+          "risk": "read-only",
+          "undo": "none"
+        },
+        {
+          "step": 2,
+          "action": "If cartFailure flag is on, disable it",
+          "validate_cmd": "kubectl get configmap flagd-config -o yaml | grep -A2 cartFailure",
+          "risk": "low - feature flag toggle",
+          "undo": "re-enable the flag"
+        }
+      ],
+      "last_reviewed": 1789000000000
+    },
+    {
+      "id": "runbook:recommendation-memory",
+      "title": "Recommendation service slowdown / memory leak",
+      "applies_to": ["service:recommendation"],
+      "params": [
+        {"id": "param:recs-cache-size", "name": "cache_max_size", "kind": "db"}
+      ],
+      "steps": [
+        {
+          "step": 1,
+          "action": "Check recommendation memory usage trend (container_memory_working_set_bytes)",
+          "validate_cmd": "kubectl top pods -l app=recommendation",
+          "risk": "read-only",
+          "undo": "none"
+        },
+        {
+          "step": 2,
+          "action": "If recommendationCacheFailure flag is on, disable it (leak scenario)",
+          "validate_cmd": "kubectl get configmap flagd-config -o yaml | grep -A2 recommendationCacheFailure",
+          "risk": "low - feature flag toggle",
+          "undo": "re-enable the flag"
+        },
+        {
+          "step": 3,
+          "action": "Restart recommendation pods if memory is exhausted",
+          "validate_cmd": "kubectl rollout status deployment/recommendation",
+          "risk": "medium - service restart",
+          "undo": "none (pods are stateless)"
+        }
+      ],
+      "last_reviewed": 1789000000000
+    },
+    {
+      "id": "runbook:kafka-backpressure",
+      "title": "Kafka backpressure / consumer lag",
+      "applies_to": ["service:kafka"],
+      "params": [
+        {"id": "param:kafka-brokers", "name": "broker_list", "kind": "cluster"}
+      ],
+      "steps": [
+        {
+          "step": 1,
+          "action": "Check consumer group lag",
+          "validate_cmd": "kubectl exec deploy/kafka -- kafka-consumer-groups.sh --describe --all-groups",
+          "risk": "read-only",
+          "undo": "none"
+        }
+      ],
+      "last_reviewed": 1789000000000
+    }
+  ],
+  "deployments": [
+    {"id": "deployment:dep-0401", "ts": 1791900000000, "version": "v1.42.0", "commit": "9c1e2ab", "actor": "team:payments", "status": "succeeded", "instance": "instance:payment-7d9f4-x2v4b"},
+    {"id": "deployment:dep-0402", "ts": 1792138800000, "version": "v1.43.0", "commit": "4d8f3ce", "actor": "team:payments", "status": "succeeded", "instance": "instance:payment-7d9f4-x2v4b"},
+    {"id": "deployment:dep-0403", "ts": 1792117200000, "version": "v2.11.0", "commit": "7b2a9de", "actor": "team:discovery", "status": "succeeded", "instance": "instance:recommendation-4a1b3-s9v2k"},
+    {"id": "deployment:dep-0404", "ts": 1792053600000, "version": "v1.7.3", "commit": "1f6c8ba", "actor": "team:commerce", "status": "succeeded", "instance": "instance:cart-5e2a8-q1r5t"}
+  ],
+  "past_incidents": [
+    {
+      "id": "incident:INC-0417",
+      "symptom": "checkout latency up",
+      "start_ts": 1786000000000,
+      "end_ts": 1786003600000,
+      "status": "resolved",
+      "verdict": "diagnosed",
+      "affects": "service:checkout",
+      "decision": {
+        "id": "decision:dec-0417",
+        "ts": 1786001800000,
+        "kind": "mitigation",
+        "outcome": "successful",
+        "detail": "Disabled paymentUnreachable feature flag after payment connection errors confirmed"
+      }
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "_provenance": "Derived from OTel Demo feature-flag scenario paymentFailure/paymentUnreachable (https://opentelemetry.io/docs/demo/feature-flags/). All timestamps epoch-ms UTC. Base time 2026-10-16T09:00:00Z = 1792141200000.",
+  "incident": {
+    "id": "incident:INC-1001",
+    "symptom": "checkout latency up",
+    "start_ts": 1792141200000
+  },
+  "graph_writes": [
+    {
+      "node": "Alert",
+      "props": {"id": "alert:INC-1001/a1", "kind": "latency", "severity": "critical", "value": 1500, "threshold": 400, "unit": "ms", "ts": 1792141200000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "LogEvent",
+      "props": {"id": "log:INC-1001/l1", "level": "error", "template_id": "payment_conn_refused", "message": "payment service unreachable: connection refused (dial tcp 10.42.1.17:50051)", "service_id": "service:checkout", "ts": 1792141220000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "LogEvent",
+      "props": {"id": "log:INC-1001/l2", "level": "error", "template_id": "checkout_timeout", "message": "request timed out waiting for payment confirmation", "service_id": "service:checkout", "ts": 1792141240000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "LogEvent",
+      "props": {"id": "log:INC-1001/l3", "level": "info", "template_id": "checkout_normal", "message": "GET /cart fulfilled in 42ms", "service_id": "service:checkout", "ts": 1792141250000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "LogEvent",
+      "props": {"id": "log:INC-1001/l4", "level": "error", "template_id": "payment_charge_failed", "message": "charge failed: upstream connection reset by peer", "service_id": "service:payment", "ts": 1792141210000},
+      "edge": ["OBSERVED_ON", "service:payment"]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {"id": "metric:INC-1001/m1", "metric": "http_requests_failed", "z": 5.2, "direction": "up", "baseline_median": 12.0, "baseline_iqr": 3.5, "gamma": 14.6, "delta": "+340%", "ts": 1792141260000},
+      "edge": ["OBSERVED_ON", "service:payment"]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {"id": "metric:INC-1001/m2", "metric": "rpc_server_duration_p99_ms", "z": 6.1, "direction": "up", "baseline_median": 180.0, "baseline_iqr": 22.0, "gamma": 60.5, "delta": "200ms->1.5s", "ts": 1792141260000},
+      "edge": ["OBSERVED_ON", "service:payment"]
+    },
+    {
+      "node": "MetricAnomaly",
+      "props": {"id": "metric:INC-1001/m3", "metric": "rpc_client_duration_p99_ms", "z": 4.8, "direction": "up", "baseline_median": 210.0, "baseline_iqr": 30.0, "gamma": 43.0, "delta": "230ms->1.6s", "ts": 1792141260000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "ConfigChange",
+      "props": {"id": "config:INC-1001/c1", "flag": "paymentFailure", "value": "true", "ts": 1792140900000},
+      "edge": ["CHANGED", "service:payment"]
+    },
+    {
+      "node": "Span",
+      "props": {"id": "span:INC-1001/s1", "trace_id": "tr-1001-01", "span_id": "sp-01", "parent_id": "", "op": "POST /api/checkout", "duration_us": 1520000, "status": "ok", "service_id": "service:checkout", "ts": 1792141210000},
+      "edge": ["OBSERVED_ON", "service:checkout"]
+    },
+    {
+      "node": "Span",
+      "props": {"id": "span:INC-1001/s2", "trace_id": "tr-1001-01", "span_id": "sp-02", "parent_id": "sp-01", "op": "oteldemo.PaymentService/charge", "duration_us": 1498000, "status": "error", "service_id": "service:payment", "ts": 1792141210000},
+      "edge": ["OBSERVED_ON", "service:payment"]
+    },
+    {
+      "node": "Span",
+      "props": {"id": "span:INC-1001/s3", "trace_id": "tr-1001-02", "span_id": "sp-03", "parent_id": "", "op": "oteldemo.CartService/GetCart", "duration_us": 42000, "status": "ok", "service_id": "service:cart", "ts": 1792141250000},
+      "edge": ["OBSERVED_ON", "service:cart"]
+    }
+  ],
+  "expected": {
+    "root_cause_service": "service:payment",
+    "must_mention": ["service:payment", "service:checkout"],
+    "must_not_blame": ["service:cart", "service:recommendation"],
+    "expected_evidence": ["alert:INC-1001/a1", "log:INC-1001/l1", "metric:INC-1001/m1", "config:INC-1001/c1"],
+    "expected_runbook": "runbook:payment-failures",
+    "expected_owner": "team:payments"
+  }
+}
