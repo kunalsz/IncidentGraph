@@ -12,6 +12,7 @@ Every source passes through this before touching the graph:
 """
 
 import logging
+import math
 import re
 from datetime import datetime, timezone
 
@@ -26,6 +27,7 @@ SEVERITY_ORDER = ["critical", "major", "minor", "warning", "info"]
 # never silently dropped or guessed.
 _SEVERITY_MAP = {
     "critical": "critical", "crit": "critical", "sev1": "critical", "p0": "critical",
+    "major": "major", "minor": "minor",
     "high": "major", "error": "major", "sev2": "major", "p1": "major",
     "medium": "minor", "warn": "warning", "warning": "warning",
     "low": "warning", "sev3": "warning", "p2": "warning",
@@ -49,17 +51,17 @@ def to_epoch_ms(ts) -> int:
     if isinstance(ts, bool):
         raise ValueError(f"invalid timestamp: {ts!r}")
     if isinstance(ts, (int, float)):
-        if ts < 0:
+        if ts < 0 or ts >= 2**63 or not math.isfinite(ts):
             raise ValueError(f"invalid timestamp: {ts!r}")
         return int(ts)
     if isinstance(ts, datetime):
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        return int(ts.timestamp() * 1000)
+        return to_epoch_ms(int(ts.timestamp() * 1000))
     if isinstance(ts, str):
         s = ts.strip()
         if s.isdigit():
-            return int(s)
+            return to_epoch_ms(int(s))
         iso = s.replace("Z", "+00:00")
         try:
             return to_epoch_ms(datetime.fromisoformat(iso))
@@ -113,7 +115,7 @@ def is_error_log(level: str) -> bool:
 
 def normalize_log(raw: dict) -> dict:
     """Normalize one raw log record into a LogEvent property dict."""
-    message = raw.get("message", "")
+    message = str(raw.get("message") or "")
     lines = aggregate_stack_traces(str(message).splitlines())
     return {
         "id": raw["id"],
@@ -167,3 +169,24 @@ def normalize_metric_anomaly(raw: dict) -> dict:
         **{key: raw[key] for key in ("value", "baseline_mean", "baseline_std")
            if key in raw},
     }
+
+
+def normalize_span(raw: dict) -> dict:
+    """Canonical status retains unknown rather than treating it as an error."""
+    result = dict(raw)
+    result['ts'] = to_epoch_ms(raw['ts'])
+    status = raw.get('status')
+    if isinstance(status, bool):
+        status = None
+    if status in (2, '2', 'error', 'ERROR', 'STATUS_CODE_ERROR'):
+        normalized = 'error'
+    elif status in (0, 1, '0', '1', 'ok', 'OK', 'STATUS_CODE_OK'):
+        normalized = 'ok'
+    else:
+        normalized = 'unknown'
+    result.update(status=normalized, is_error=normalized == 'error')
+    duration = result.get('duration_us')
+    if duration is not None and (type(duration) not in (int, float) or
+                                not math.isfinite(duration) or duration < 0):
+        raise ValueError('invalid span duration_us')
+    return result

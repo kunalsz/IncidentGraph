@@ -12,10 +12,13 @@ import uuid
 
 from falkordb import FalkorDB
 
+from backend.app.envfile import load_env_file
+
 DEMO_GRAPH = "incidentgraph:demo"
 
 
 def _connect() -> FalkorDB:
+    load_env_file()
     host = os.environ.get("FALKORDB_HOST", "localhost")
     port = int(os.environ.get("FALKORDB_PORT", "6380"))
     return FalkorDB(host=host, port=port)

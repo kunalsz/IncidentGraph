@@ -692,6 +692,8 @@
       "log:INC-1003/l1",
       "metric:INC-1003/m1",
       "config:INC-1003/c1"
-    ]
+    ],
+    "expected_runbook": "runbook:recommendation-memory",
+    "expected_owner": "team:discovery"
   }
 }

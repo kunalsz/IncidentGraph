@@ -30,7 +30,7 @@ class TestScoreMatch:
 
     def test_contains(self):
         s = linking.score_match("pay", "payment")
-        assert s == tuning.LINK_CONTAINS_SCORE
+        assert s == 0.0  # short aliases require explicit configuration
 
     def test_fuzzy_typo(self):
         # "paymnet" vs "payment": SequenceMatcher ratio >= 0.85 (long words)
@@ -58,10 +58,10 @@ class TestPickBest:
     def test_abstains_below_cutoff(self):
         assert linking.pick_best("zzz totally unrelated", NODES) is None
 
-    def test_tie_breaks_on_id(self):
+    def test_tied_aliases_are_ambiguous(self):
         a = {"id": "service:a", "type": "Service", "name": "cart", "aliases": []}
         b = {"id": "service:b", "type": "Service", "name": "cart", "aliases": []}
-        assert linking.pick_best("cart", [a, b])["id"] == "service:a"
+        assert linking.pick_best("cart", [a, b]) is None
 
 
 class TestNormalizeName:

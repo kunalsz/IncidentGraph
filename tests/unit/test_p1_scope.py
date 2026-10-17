@@ -37,7 +37,7 @@ def test_sigma_from_baseline_and_strict_threshold():
 
 def test_self_time_joins_trace_and_direct_parent_only():
     observations = [
-        record("Span", "p", trace_id="t1", span_id="p", duration_us=1_000_000),
+        record("Span", "p", trace_id="t1", span_id="p", duration_us=1_000_000, trace_complete=True),
         record("Span", "c", sid="service:b", trace_id="t1", span_id="c", parent_id="p", duration_us=200_000),
         record("Span", "g", sid="service:b", trace_id="t1", span_id="g", parent_id="c", duration_us=100_000),
         record("Span", "other", sid="service:b", trace_id="t2", parent_id="p", duration_us=900_000),

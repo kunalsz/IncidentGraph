@@ -1,3 +1,24 @@
+# Explicit allowlists, shared by initial fetch, trace context and live validation.
+# toJSON is supported by the pinned server for scalar and array properties.
+# CASE prevents oversized values from crossing the wire; rejected rows fail closed.
+SERVICE_FIELDS = ('id', 'name', 'aliases', 'criticality', 'level', 'level_convention', 'service_id')
+EVIDENCE_FIELDS = ('id', 'ts', 'metric', 'column', 'value', 'baseline_mean', 'baseline_std',
+                   'z', 'gamma', 'direction', 'level', 'is_error', 'template_id', 'message',
+                   'duration_us', 'start_us', 'trace_id', 'span_id', 'parent_id', 'trace_complete',
+                   'op', 'status', 'flag', 'version', 'kind', 'name', 'description', 'reason')
+EDGE_FIELDS = ('invariant', 'weight', 'protocol', 'criticality')
+
+
+def projection(variable, fields, *, kind=False):
+    checks = [f'size(toJSON({variable}.{key})) > $field_chars' for key in fields]
+    values = [f'{key}: CASE WHEN {checks[i]} THEN null ELSE {variable}.{key} END'
+              for i, key in enumerate(fields)]
+    values.append('__rejected: ' + ' OR '.join(f'coalesce({c}, false)' for c in checks))
+    if kind:
+        values.append(f'__kind: labels({variable})[0]')
+    return '{' + ', '.join(values) + '}'
+
+
 SCOPE_SERVICES = """
 MATCH (a:Service {id: $anchor})
 OPTIONAL MATCH (a)-[r:DEPENDS_ON]-(n:Service)
@@ -6,6 +27,14 @@ WITH a, collect(DISTINCT n) + [a] AS candidates
 UNWIND candidates AS s
 RETURN DISTINCT s
 ORDER BY s.id = $anchor DESC, s.criticality DESC, s.id
+"""
+
+# Benchmark mode (RCAEval adapter): cold ranking over every service in the
+# graph — RCAEval methods rank all candidates with no reported symptom.
+SCOPE_SERVICES_FULL = """
+MATCH (s:Service)
+RETURN s
+ORDER BY s.criticality DESC, s.id
 """
 
 SCOPE_EDGES = """
@@ -27,14 +56,23 @@ ORDER BY e.ts, e.id, sid
 """
 
 SCOPE_CHANGES = """
-MATCH (c:ConfigChange)-[:CHANGED]->(s:Service)
-WHERE s.id IN $ids AND c.ts <= $t1
-RETURN c AS change, s.id AS service_id, s.id AS target_id
-UNION
-MATCH (d:Deployment)-[:DEPLOYED_AT]->(i:Instance)
-WHERE i.service_id IN $ids AND d.ts <= $t1
-RETURN d AS change, i.service_id AS service_id, i.id AS target_id
+MATCH (c)-[r]->(target)
+WHERE ((c:ConfigChange AND type(r) = 'CHANGED') OR (c:Deployment AND type(r) = 'DEPLOYED_AT'))
+  AND ((target:Service AND target.id IN $ids) OR (target:Instance AND target.service_id IN $ids))
+  AND c.ts >= $t0 AND c.ts <= $t1
+RETURN c, CASE WHEN target:Instance THEN target.service_id ELSE target.id END, target.id
+ORDER BY c.ts DESC, c.id
 """
+
+SCOPE_SERVICES = SCOPE_SERVICES.replace('RETURN DISTINCT s\n', 'RETURN DISTINCT ' + projection('s', SERVICE_FIELDS) + ' AS s\n')
+SCOPE_SERVICES_FULL = SCOPE_SERVICES_FULL.replace('RETURN s\n', 'RETURN ' + projection('s', SERVICE_FIELDS) + ' AS s\n')
+SCOPE_OBSERVATIONS = SCOPE_OBSERVATIONS.replace('RETURN DISTINCT e,', 'RETURN DISTINCT ' + projection('e', EVIDENCE_FIELDS, kind=True) + ' AS e,')
+SCOPE_CHANGES = SCOPE_CHANGES.replace('RETURN c,', 'RETURN ' + projection('c', EVIDENCE_FIELDS, kind=True) + ' AS c,')
+SCOPE_EDGES = SCOPE_EDGES.replace('properties(r)', projection('r', EDGE_FIELDS))
+for _name in ('SCOPE_OBSERVATIONS', 'SCOPE_CHANGES'):
+    globals()[_name] = globals()[_name].replace(
+        ', target.id\n', ", CASE WHEN size(toJSON(target.id)) > $field_chars THEN null ELSE target.id END\n")
+
 
 UPDATE_SCOPE_STATS = """
 MATCH (s:Service {id: $id})

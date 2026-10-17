@@ -3,7 +3,7 @@ export FALKORDB_HOST ?= localhost
 export FALKORDB_PORT ?= 6380
 PY := PYTHONPATH=backend:. $(PYTHON)
 
-.PHONY: up down seed demo test surface eval
+.PHONY: up down seed demo test surface eval eval-rcaeval eval-rcaeval-agent
 
 up:
 	docker compose up -d
@@ -25,3 +25,11 @@ surface:
 
 eval:
 	$(PY) scripts/eval.py --fixtures --rank-only
+
+# External benchmark (requires `python scripts/fetch_rcaeval.py` first)
+eval-rcaeval:
+	$(PY) scripts/eval.py --rcaeval data/RE2-OB
+
+# External benchmark with the agent (P3-P5, live LLM; needs LLM_API_KEY)
+eval-rcaeval-agent:
+	$(PY) scripts/eval.py --rcaeval data/RE2-OB --with-agent --report output/rcaeval-agent

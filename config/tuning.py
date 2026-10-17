@@ -100,7 +100,18 @@ RWR_TOP3_SHARE_SINGLE = 0.7       # top-3 RWR mass share => single-cause present
 # Budget (L11 — hard input, not aspiration)
 # ---------------------------------------------------------------------------
 
-@dataclass
+# Operational safety ceilings, not tuning defaults. Supervisor operations must
+# never scale with an unrestricted user-supplied counter.
+BUDGET_OPERATIONAL_CEILINGS = {
+    "max_llm_calls": 10_000, "max_tokens": 100_000_000,
+    "max_nodes_visited": 10_000, "max_expansions_per_branch": 1_000,
+    "max_hypotheses": 10_000, "max_wall_s": 86_400,
+    "finalization_headroom_s": 3_600,
+}
+MAX_BUDGET_BRANCHES = 1024
+
+
+@dataclass(frozen=True)
 class InvestigationBudget:
     max_llm_calls: int = 75
     max_tokens: int = 200_000
@@ -109,15 +120,35 @@ class InvestigationBudget:
     max_expansions_per_branch: int = MAX_EXPANSIONS_PER_BRANCH
     max_hypotheses: int = 30
 
+    # v2: max_llm_calls caps outbound attempts, including failures/rotations.
+    finalization_headroom_s: float = 5.0
+    strict_tokens: bool = False
+    expansion_slot_fraction: float = 0.2
+
+    def __post_init__(self):
+        import math
+        for name in ("max_llm_calls", "max_tokens", "max_nodes_visited",
+                     "max_expansions_per_branch", "max_hypotheses"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        for name in ("max_wall_s", "finalization_headroom_s"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative")
+        for name, ceiling in BUDGET_OPERATIONAL_CEILINGS.items():
+            if getattr(self, name) > ceiling:
+                raise ValueError(f"{name} exceeds operational ceiling {ceiling}")
+        if type(self.strict_tokens) is not bool:
+            raise ValueError("strict_tokens must be boolean")
+        if (type(self.expansion_slot_fraction) not in (int, float)
+                or not math.isfinite(self.expansion_slot_fraction)
+                or not 0 <= self.expansion_slot_fraction <= 1):
+            raise ValueError("expansion_slot_fraction must be within [0, 1]")
+
     def as_dict(self) -> dict:
-        return {
-            "max_llm_calls": self.max_llm_calls,
-            "max_tokens": self.max_tokens,
-            "max_wall_s": self.max_wall_s,
-            "max_nodes_visited": self.max_nodes_visited,
-            "max_expansions_per_branch": self.max_expansions_per_branch,
-            "max_hypotheses": self.max_hypotheses,
-        }
+        from dataclasses import asdict
+        return asdict(self)
 
 
 DEFAULT_BUDGET = InvestigationBudget()

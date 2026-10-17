@@ -37,8 +37,10 @@ def test_payment_scope_and_statistics(investigation):
     assert "service:cart-cache" not in stats
     assert "service:recommendation" not in stats
     assert stats["service:payment"].sev_m == 6.1
-    assert stats["service:checkout"].self_time_ms == 22
-    assert stats["service:payment"].self_time_ms == 1498
+    assert stats["service:checkout"].self_time_ms == 0
+    assert not stats["service:checkout"].self_time_flag
+    assert stats["service:payment"].self_time_ms == 0
+    assert not stats["service:payment"].self_time_flag
     assert stats["service:payment"].hours_since_change == pytest.approx(5 / 60)
     assert result.n_series_in_scope == 3
     assert not result.truncated
@@ -114,6 +116,55 @@ def test_series_limit_and_isolated_anchor(investigation, monkeypatch):
     assert len(result.nodes) == 1
     assert not result.truncated
     assert {g["kind"] for g in result.evidence_gaps} == {"no_logs", "no_traces"}
+
+
+@pytest.mark.integration
+def test_projection_rejects_oversized_field_without_wire_value(investigation):
+    from backend.app.graph.gateway import ReadGateway
+    from backend.app.graph import queries
+    inv, graph = investigation
+    huge = 'X' * 50000
+    graph.query("MATCH (s:Service {id:'service:checkout'}) CREATE (:LogEvent {id:'log:huge', ts:1792141200000, message:$message, extra:$message})-[:OBSERVED_ON]->(s)", params={'message': huge})
+    rows, _ = ReadGateway(graph).read(queries.SCOPE_OBSERVATIONS,
+        {'ids': [inv.anchor_service], 't0': inv.window.t0, 't1': inv.window.t1}, cap=100)
+    projected = next(row[0] for row in rows if row[0]['id'] == 'log:huge')
+    assert projected['message'] is None and projected['__rejected'] is True
+    assert 'extra' not in projected
+    assert huge not in repr(rows)
+    result = scope_investigation(inv)
+    assert 'log:huge' not in {n['id'] for n in result.nodes}
+    assert result.truncated
+
+
+@pytest.mark.integration
+def test_live_publication_change_during_private_read_rejected_and_cleaned(investigation, monkeypatch):
+    from falkordb import Graph
+    inv, graph = investigation
+    original_copy = Graph.copy
+    def copy_then_correct(self, name):
+        frozen = original_copy(self, name)
+        graph.query("MATCH (s:Service {id:$id}) SET s.name='concurrent correction'",
+                    params={'id': inv.anchor_service})
+        return frozen
+    monkeypatch.setattr(Graph, 'copy', copy_then_correct)
+    with pytest.raises(ValueError, match='source changed'):
+        scope_investigation(inv)
+    assert not [n for n in client().execute_command('GRAPH.LIST') if n.startswith('incidentgraph:read:')]
+
+
+@pytest.mark.integration
+def test_snapshot_is_immutable_and_detects_live_corrections(investigation):
+    from backend.app.engine.scope_policy import recalled_scope
+    inv, graph = investigation
+    result = scope_investigation(inv)
+    original = result.nodes[0]['properties']['id']
+    result.nodes[0]['properties']['id'] = 'mutated'
+    restored, _ = recalled_scope(graph, inv.window)
+    assert restored.nodes[0]['properties']['id'] == original
+    graph.query("MATCH (s:Service {id:$id}) SET s.name='corrected'", params={'id': original})
+    with pytest.raises(ValueError, match='source changed'):
+        recalled_scope(graph, inv.window)
+    assert not [n for n in client().execute_command('GRAPH.LIST') if n.startswith('incidentgraph:read:')]
 
 
 def test_public_demo_is_not_writable(investigation):

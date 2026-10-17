@@ -1,0 +1,36 @@
+{
+  "_provenance": "Authored OnlineBoutique topology for the RCAEval RE2-OB adapter. Dependency edges follow the public Google microservices-demo architecture (RCAEval's RE2 deployment); criticality and level are authored priors (level = topological depth over DEPENDS_ON). No benchmark labels are used: the entity list is exactly the union of telemetry column prefixes observed in the dataset (adservice..shippingservice plus redis, frontend-external, istio-init).",
+  "services": [
+    {"id": "service:frontend-external", "name": "frontend-external", "aliases": ["external lb", "load balancer"], "criticality": 0.5, "level": 0},
+    {"id": "service:frontend", "name": "frontend", "aliases": ["frontendservice", "web", "ui"], "criticality": 0.95, "level": 1},
+    {"id": "service:checkoutservice", "name": "checkoutservice", "aliases": ["checkout", "orders"], "criticality": 0.9, "level": 2},
+    {"id": "service:cartservice", "name": "cartservice", "aliases": ["cart"], "criticality": 0.8, "level": 2},
+    {"id": "service:productcatalogservice", "name": "productcatalogservice", "aliases": ["productcatalog", "catalog", "products"], "criticality": 0.7, "level": 2},
+    {"id": "service:currencyservice", "name": "currencyservice", "aliases": ["currency", "fx"], "criticality": 0.6, "level": 2},
+    {"id": "service:recommendationservice", "name": "recommendationservice", "aliases": ["recommendation", "recs"], "criticality": 0.6, "level": 2},
+    {"id": "service:shippingservice", "name": "shippingservice", "aliases": ["shipping"], "criticality": 0.7, "level": 2},
+    {"id": "service:adservice", "name": "adservice", "aliases": ["ads"], "criticality": 0.5, "level": 2},
+    {"id": "service:paymentservice", "name": "paymentservice", "aliases": ["payment", "billing"], "criticality": 0.8, "level": 3},
+    {"id": "service:emailservice", "name": "emailservice", "aliases": ["email"], "criticality": 0.4, "level": 3},
+    {"id": "service:redis", "name": "redis", "aliases": ["redis-cart", "cart store"], "criticality": 0.6, "level": 3},
+    {"id": "service:istio-init", "name": "istio-init", "aliases": ["sidecar init"], "criticality": 0.1, "level": 4}
+  ],
+  "depends_on": [
+    {"from": "service:frontend-external", "to": "service:frontend"},
+    {"from": "service:frontend", "to": "service:adservice"},
+    {"from": "service:frontend", "to": "service:cartservice"},
+    {"from": "service:frontend", "to": "service:checkoutservice"},
+    {"from": "service:frontend", "to": "service:currencyservice"},
+    {"from": "service:frontend", "to": "service:productcatalogservice"},
+    {"from": "service:frontend", "to": "service:recommendationservice"},
+    {"from": "service:frontend", "to": "service:shippingservice"},
+    {"from": "service:checkoutservice", "to": "service:cartservice"},
+    {"from": "service:checkoutservice", "to": "service:currencyservice"},
+    {"from": "service:checkoutservice", "to": "service:emailservice"},
+    {"from": "service:checkoutservice", "to": "service:paymentservice"},
+    {"from": "service:checkoutservice", "to": "service:productcatalogservice"},
+    {"from": "service:checkoutservice", "to": "service:shippingservice"},
+    {"from": "service:recommendationservice", "to": "service:productcatalogservice"},
+    {"from": "service:cartservice", "to": "service:redis"}
+  ]
+}

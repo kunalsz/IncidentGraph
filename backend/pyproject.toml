@@ -13,6 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 api = ["fastapi", "uvicorn[standard]"]
 dev = ["pytest"]
+# external benchmark adapter (RCAEval RE2-OB parquet loading + candidate counts)
+eval = ["pandas>=2.0", "pyarrow>=14.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["../tests"]

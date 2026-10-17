@@ -1,4 +1,4 @@
-from backend.app.engine.contracts import Investigation, RankedCandidate, RankResult, ScopeResult
+from backend.app.engine.contracts import Investigation, RankedCandidate, RankResult, ScopeResult, dump_handoff
 from backend.app.graph.client import graph_for
 from backend.app.graph.scorers import indicator_scores, latency_scores, random_walk, reciprocal_rank_fusion
 from backend.app.ingest.normalize import is_error_log
@@ -10,7 +10,8 @@ def rank_candidates(scope: ScopeResult) -> RankResult:
     nodes = {node["id"]: node for node in scope.nodes}
     observations = []
     for edge in scope.edges:
-        if edge["type"] == "OBSERVED_ON" and edge["target"] in ids:
+        if (edge["type"] == "OBSERVED_ON" and edge["target"] in ids
+                and edge["source"] in nodes):
             observations.append({**nodes[edge["source"]], "service_id": edge["target"]})
     latency = latency_scores(ids, observations, scope.edges)
     mass = random_walk(ids, scope.edges, scope.anchor_service)
@@ -51,7 +52,7 @@ def rank_candidates(scope: ScopeResult) -> RankResult:
     audit = [{"id": sid, "reason": "outside_top_k_without_rule_flag"}
              for sid in ordered if sid not in selected]
     return RankResult(
-        incident_id=scope.incident_id, candidates=candidates,
+        incident_id=scope.incident_id, scope_ref=scope.scope_ref, candidates=candidates,
         branch_ids=[sid for sid in ordered if sid in selected],
         indicators=indicator_scores(observations), audit=audit,
         n_candidates=len(ids), truncated=scope.truncated,
@@ -73,9 +74,9 @@ def rank_investigation(investigation: Investigation, scope: ScopeResult) -> Rank
     result = rank_candidates(scope)
     graph_for(investigation.session_graph).query(
         "MERGE (a:Artifact {id: $id}) "
-        "SET a.kind = 'stage-view', a.stage = 'strix', a.version = 1, "
+        "SET a.kind = 'stage-view', a.stage = 'strix', a.version = 2, "
         "a.incident_id = $incident, a.json = $payload",
         params={"id": f"artifact:{investigation.incident_id}:strix:0",
-                "incident": investigation.incident_id, "payload": result.model_dump_json()},
+                "incident": investigation.incident_id, "payload": dump_handoff("rank", result)},
     )
     return result

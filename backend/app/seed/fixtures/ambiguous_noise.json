@@ -1,0 +1,34 @@
+{
+  "incident": {
+    "id": "incident:INC-2001",
+    "symptom": "frontend latency spikes",
+    "start_ts": 1792400000000
+  },
+  "graph_writes": [
+    {"node": "Alert", "props": {"id": "alert:INC-2001/a1", "kind": "latency", "severity": "warning", "value": 320, "threshold": 400, "unit": "ms", "ts": 1792400000000}, "edge": ["OBSERVED_ON", "service:frontend"]},
+    {"node": "Alert", "props": {"id": "alert:INC-2001/a2", "kind": "error_rate", "severity": "warning", "value": 1.2, "threshold": 2.0, "unit": "pct", "ts": 1792399980000}, "edge": ["OBSERVED_ON", "service:cart"]},
+    {"node": "Alert", "props": {"id": "alert:INC-2001/a3", "kind": "latency", "severity": "warning", "value": 240, "threshold": 300, "unit": "ms", "ts": 1792400030000}, "edge": ["OBSERVED_ON", "service:recommendation"]},
+    {"node": "Alert", "props": {"id": "alert:INC-2001/a4", "kind": "cpu", "severity": "info", "value": 0.6, "threshold": 0.9, "unit": "cores", "ts": 1792400060000}, "edge": ["OBSERVED_ON", "service:shipping"]},
+
+    {"node": "LogEvent", "props": {"id": "log:INC-2001/l1", "level": "warning", "template_id": "checkout_upstream_retry", "message": "retrying upstream call after timeout", "service_id": "service:checkout", "ts": 1792400005000}, "edge": ["OBSERVED_ON", "service:checkout"]},
+    {"node": "LogEvent", "props": {"id": "log:INC-2001/l2", "level": "warning", "template_id": "frontend_duration_elevated", "message": "elevated request duration observed", "service_id": "service:frontend", "ts": 1792400010000}, "edge": ["OBSERVED_ON", "service:frontend"]},
+    {"node": "LogEvent", "props": {"id": "log:INC-2001/l3", "level": "warning", "template_id": "cart_cache_miss_high", "message": "cache miss ratio above usual", "service_id": "service:cart", "ts": 1792400015000}, "edge": ["OBSERVED_ON", "service:cart"]},
+    {"node": "LogEvent", "props": {"id": "log:INC-2001/l4", "level": "info", "template_id": "recs_queue_nominal", "message": "inference queue length nominal", "service_id": "service:recommendation", "ts": 1792400020000}, "edge": ["OBSERVED_ON", "service:recommendation"]},
+
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m1", "metric": "rpc_server_duration_p99_ms", "z": 2.4, "direction": "up", "baseline_median": 110.0, "baseline_iqr": 18.0, "gamma": 2.1, "delta": "+22%", "ts": 1792400040000}, "edge": ["OBSERVED_ON", "service:cart"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m2", "metric": "cpu_utilization", "z": -1.8, "direction": "down", "baseline_median": 0.55, "baseline_iqr": 0.08, "gamma": 1.9, "ts": 1792400040000}, "edge": ["OBSERVED_ON", "service:cart"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m3", "metric": "rpc_server_duration_p99_ms", "z": 2.7, "direction": "up", "baseline_median": 260.0, "baseline_iqr": 40.0, "gamma": 2.4, "delta": "+16%", "ts": 1792400035000}, "edge": ["OBSERVED_ON", "service:recommendation"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m4", "metric": "memory_usage", "z": 1.9, "direction": "up", "baseline_median": 402653184.0, "baseline_iqr": 8388608.0, "gamma": 1.7, "ts": 1792400035000}, "edge": ["OBSERVED_ON", "service:recommendation"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m5", "metric": "error_rate", "z": 2.2, "direction": "up", "baseline_median": 0.8, "baseline_iqr": 0.2, "gamma": 2.0, "ts": 1792400025000}, "edge": ["OBSERVED_ON", "service:frontend"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m6", "metric": "cpu_utilization", "z": 1.6, "direction": "up", "baseline_median": 0.42, "baseline_iqr": 0.09, "gamma": 1.5, "ts": 1792400030000}, "edge": ["OBSERVED_ON", "service:shipping"]},
+    {"node": "MetricAnomaly", "props": {"id": "metric:INC-2001/m7", "metric": "rpc_client_duration_p99_ms", "z": 2.8, "direction": "up", "baseline_median": 240.0, "baseline_iqr": 35.0, "gamma": 2.6, "delta": "+18%", "ts": 1792400045000}, "edge": ["OBSERVED_ON", "service:checkout"]}
+  ],
+  "expected": {
+    "root_cause_service": null,
+    "expected_verdict": "insufficient_evidence",
+    "expected_tier": "INCONCLUSIVE",
+    "expected_gap_kind": "decisive_evidence",
+    "must_not_blame": ["service:cart", "service:recommendation", "service:shipping"],
+    "note": "Alert storm with every signal below the 3-sigma decisive threshold and no traces: the principled-abstention signature (paper_02). The engine must NOT guess a cause here."
+  }
+}

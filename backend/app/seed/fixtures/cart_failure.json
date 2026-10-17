@@ -692,6 +692,8 @@
       "log:INC-1002/l1",
       "metric:INC-1002/m1",
       "config:INC-1002/c1"
-    ]
+    ],
+    "expected_runbook": "runbook:cart-store-failures",
+    "expected_owner": "team:commerce"
   }
 }

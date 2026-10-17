@@ -7,3 +7,7 @@ node_modules/
 dist/
 .pytest_cache/
 *.egg-info/
+data/
+output/
+.DS_Store
+audit/

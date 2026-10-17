@@ -1,138 +1,141 @@
-"""Entity linking (§4.3 P0): alias table + fuzzy match against Service|Instance
-names. RCLAgent-V2's `_normalise_name` repair pattern; unresolved anchors
-clarify/abstain, never guess.
-
-The scoring functions are pure (no graph access) so they are unit-testable;
-`link_entity` fetches candidates from the graph and scores them.
-"""
-
+"""Token-aware global entity resolution; ambiguity is never an ID tie-break."""
+import json
 import re
 from difflib import SequenceMatcher
-
 from config import tuning
-from backend.app.ingest.normalize import service_from_pod
+from backend.app.settings import SCOPE_SETTINGS
+
+STOPWORDS = {'is', 'a', 'the', 'service', 'services', 'high', 'low', 'cpu',
+             'latency', 'error', 'errors', 'slow', 'up', 'down', 'and', 'on'}
 
 
-def normalize_name(name: str) -> str:
-    """Repair pattern: lowercase, strip non-alphanumerics, collapse spaces."""
-    s = (name or "").strip().lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+def normalize_name(name):
+    return ' '.join(re.findall(r'[a-z0-9]+', (name or '').lower()))
 
 
-def _fuzzy_threshold(query: str) -> float:
-    """Short strings need a stricter fuzzy bar: one typo in a 6-char word
-    (broken vs broker, ratio 0.83) is usually a different word, while in a
-    longer one it is usually a typo (paymnet vs payment, ratio 0.86)."""
+def _fuzzy_threshold(query):
     return 0.85 if len(query) < 8 else tuning.LINK_FUZZY_CUTOFF
 
 
-def score_match(query: str, name: str, aliases: list[str] | None = None) -> float:
-    """Score a query against a node name + aliases.
-
-    Returns 0.0 (no match) .. 1.0 (exact). Callers compare against
-    LINK_FUZZY_CUTOFF; below the cutoff we abstain rather than guess.
-    """
+def score_match(query, name, aliases=None):
     q = normalize_name(query)
-    if not q:
-        return 0.0
-    threshold = _fuzzy_threshold(q)
-    candidates = [normalize_name(name)] + [normalize_name(a) for a in (aliases or [])]
     best = 0.0
-    for cand in candidates:
-        if not cand:
+    for raw in [name, *(aliases or [])]:
+        c = normalize_name(raw)
+        if not q or not c:
             continue
-        if q == cand:
-            best = max(best, tuning.LINK_EXACT_SCORE)
-        elif q in cand or cand in q:
+        if q == c:
+            best = 1.0
+        elif len(c) > 3 and f' {c} ' in f' {q} ':
             best = max(best, tuning.LINK_CONTAINS_SCORE)
-        else:
-            ratio = SequenceMatcher(None, q, cand).ratio()
-            if ratio >= threshold:
+        elif len(q) >= 4 and len(c) >= 4 and q not in STOPWORDS:
+            ratio = SequenceMatcher(None, q, c).ratio()
+            if ratio >= _fuzzy_threshold(q):
                 best = max(best, ratio)
     return best
 
 
-def pick_best(query: str, nodes: list[dict]) -> dict | None:
-    """Pick the best-scoring node from [{id, type, name, aliases}] candidates.
-
-    Returns None when nothing clears the fuzzy cutoff (abstain, never guess).
-    Pod/instance candidates are resolved to their parent Service.
-    """
-    scored = []
+def _matches(query, nodes):
+    tokens = normalize_name(query).split()
+    exact = []
+    fuzzy = []
     for node in nodes:
-        s = score_match(query, node.get("name", ""), node.get("aliases"))
-        if s >= tuning.LINK_FUZZY_CUTOFF:
-            scored.append((s, node))
-    if not scored:
+        sid = node.get('service_id') if node['type'] == 'Instance' else node['id']
+        if not sid:
+            continue
+        forms = [node['id'], node.get('name', ''), *node.get('aliases', [])]
+        for form in forms:
+            words = normalize_name(form).split()
+            if not words or all(w in STOPWORDS for w in words):
+                continue
+            for i in range(len(tokens) - len(words) + 1):
+                end = i + len(words)
+                if tokens[i:end] == words:
+                    exact.append((i, end, sid, node, 1.0))
+                elif len(words) == 1 and len(words[0]) >= 4 and tokens[i] not in STOPWORDS:
+                    score = score_match(tokens[i], form)
+                    if score >= _fuzzy_threshold(tokens[i]):
+                        fuzzy.append((i, end, sid, node, score))
+    # Longer aliases suppress only their nested components, not separate mentions.
+    exact = [m for m in exact if not any(n[0] <= m[0] and n[1] >= m[1]
+             and n[1]-n[0] > m[1]-m[0] for n in exact)]
+    matches = exact or fuzzy
+    by_service = {}
+    for m in matches:
+        prev = by_service.get(m[2])
+        if prev is None or (m[4], m[3]['type'] == 'Service') > (prev[4], prev[3]['type'] == 'Service'):
+            by_service[m[2]] = m
+    return sorted(by_service.values(), key=lambda m: (-m[4], m[2])), bool(exact)
+
+
+def pick_best(query, nodes):
+    matches, exact = _matches(query, nodes)
+    if not matches:
         return None
-    scored.sort(key=lambda t: (-t[0], t[1]["id"]))
-    s, node = scored[0]
-    return {"id": node["id"], "type": node["type"], "score": round(s, 4)}
+    if len(matches) > 1 and (exact or matches[0][4] - matches[1][4] < SCOPE_SETTINGS.fuzzy_margin):
+        return None
+    match = matches[0]
+    return {'id': match[3]['id'], 'type': match[3]['type'], 'score': round(match[4], 4)}
 
 
-def link_entity(query: str, graph) -> dict:
-    """Link a free-text mention to a Service (or Instance resolved to its
-    Service). Graph-facing wrapper; the returned dict is also the
-    `resolve_entity` MCP tool contract (§4.5).
-
-    Returns {"query", "matched": bool, "anchor_service": str|None,
-             "nodes": [{id, type, score}], "via_instance": str|None}.
-    """
-    q = (query or "").strip()
-    if not q:
-        return {"query": q, "matched": False, "anchor_service": None,
-                "nodes": [], "via_instance": None}
-
-    # Direct pod/instance mention resolves through the single matcher.
-    if ":" not in q and service_from_pod(q):
-        sid = service_from_pod(q)
-        row = graph.query(
-            "MATCH (s:Service {id: $sid}) RETURN s.id", params={"sid": sid}
-        ).result_set
-        if row:
-            return {"query": q, "matched": True, "anchor_service": sid,
-                    "nodes": [{"id": sid, "type": "Service", "score": 1.0}],
-                    "via_instance": q}
-
-    result = graph.query(
-        "MATCH (n) WHERE n:Service OR n:Instance "
-        "RETURN n.id AS id, labels(n) AS labels, n.name AS name, "
-        "n.aliases AS aliases, n.service_id AS service_id"
-    )
-    nodes = []
-    for node_id, labels, name, aliases, service_id in result.result_set:
-        nodes.append({
-            "id": node_id,
-            "type": labels[0] if labels else "Node",
-            "name": name or "",
-            "aliases": _parse_list(aliases),
-            "service_id": service_id,
-        })
-
-    best = pick_best(q, nodes)
-    if best is None:
-        return {"query": q, "matched": False, "anchor_service": None,
-                "nodes": [], "via_instance": None}
-
-    node = next(n for n in nodes if n["id"] == best["id"])
-    if node["type"] == "Instance" and node.get("service_id"):
-        return {"query": q, "matched": True,
-                "anchor_service": node["service_id"],
-                "nodes": [best], "via_instance": node["id"]}
-    return {"query": q, "matched": True, "anchor_service": best["id"],
-            "nodes": [best], "via_instance": None}
-
-
-def _parse_list(v) -> list:
-    """FalkorDB returns list properties as a JSON string; parse defensively."""
-    if v is None:
-        return []
-    if isinstance(v, list):
-        return v
-    import json
+def link_entity(query, graph, *, settings=None):
+    from backend.app.graph.gateway import ReadGateway
+    from backend.app.settings import LINKING_SETTINGS
+    settings = settings or LINKING_SETTINGS
+    rows, overflow = ReadGateway(graph, settings=settings).read(
+        'MATCH (n) WHERE n:Service OR n:Instance '
+        'RETURN ' + ', '.join(
+            f"CASE WHEN size(toJSON(n.{key})) > $field_chars THEN '__payload_rejected__' ELSE n.{key} END"
+            if key != 'labels' else 'labels(n)'
+            for key in ('id', 'labels', 'name', 'aliases', 'service_id')) + ' ORDER BY n.id',
+        cap=settings.max_catalog)
+    if overflow:
+        # An omitted node can introduce a competing mention or shared alias.
+        # Never resolve against a partial catalog, even with an exact first hit.
+        return {'query': query, 'matched': False, 'anchor_service': None,
+                'nodes': [], 'via_instance': None, 'reason': 'catalog_overflow',
+                'truncated': True, 'catalog_cap': settings.max_catalog}
+    from backend.app.graph.gateway import admit_payload, PayloadAdmissionError
     try:
-        parsed = json.loads(v)
-        return parsed if isinstance(parsed, list) else []
-    except (ValueError, TypeError):
+        for row in rows:
+            admit_payload(row, field_chars=settings.field_chars)
+            if any(value == '__payload_rejected__' for value in row if isinstance(value, str)):
+                raise PayloadAdmissionError('catalog property rejected')
+            i, labels, name, aliases, sid = row
+            if (not isinstance(i, str) or len(labels) != 1 or labels[0] not in ('Service', 'Instance')
+                    or name is not None and not isinstance(name, str)
+                    or sid is not None and not isinstance(sid, str)
+                    or aliases is not None and not isinstance(aliases, (str, list))):
+                raise PayloadAdmissionError('invalid catalog identity')
+            parsed_aliases = json.loads(aliases) if isinstance(aliases, str) else aliases or []
+            if not isinstance(parsed_aliases, list) or any(not isinstance(a, str) for a in parsed_aliases):
+                raise PayloadAdmissionError('invalid alias')
+            admit_payload(parsed_aliases, field_chars=settings.field_chars)
+        if len({r[0] for r in rows}) != len(rows):
+            raise PayloadAdmissionError('duplicate catalog identity')
+    except (PayloadAdmissionError, TypeError, ValueError):
+        return {'query': query, 'matched': False, 'anchor_service': None,
+                'nodes': [], 'via_instance': None, 'reason': 'catalog_payload_rejected'}
+    nodes = [{'id': i, 'type': labels[0], 'name': name or '',
+              'aliases': _parse_list(aliases), 'service_id': sid}
+             for i, labels, name, aliases, sid in rows if labels]
+    services = {n['id'] for n in nodes if n['type'] == 'Service'}
+    nodes = [n for n in nodes if n['type'] == 'Service' or n.get('service_id') in services]
+    best = pick_best(query, nodes)
+    result = {'query': query, 'matched': best is not None, 'anchor_service': None,
+              'nodes': [], 'via_instance': None}
+    if best:
+        node = next(n for n in nodes if n['id'] == best['id'])
+        result.update(anchor_service=node.get('service_id') if node['type'] == 'Instance' else node['id'],
+                      nodes=[best], via_instance=node['id'] if node['type'] == 'Instance' else None)
+    return result
+
+
+def _parse_list(value):
+    if isinstance(value, list):
+        return value
+    try:
+        result = json.loads(value)
+        return result if isinstance(result, list) else []
+    except (TypeError, ValueError):
         return []

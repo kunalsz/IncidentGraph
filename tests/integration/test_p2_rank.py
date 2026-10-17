@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from backend.app.engine.contracts import Investigation, InvestigationWindow
+from backend.app.engine.contracts import Investigation, InvestigationWindow, load_handoff
 from backend.app.engine.p1_scope import scope_investigation
 from backend.app.engine.p2_rank import rank_investigation
 from backend.app.graph.client import client, graph_for
@@ -36,9 +36,10 @@ def test_artifact_is_idempotent_and_scope_is_verified():
         scope = scope_investigation(inv)
         result = rank_investigation(inv, scope)
         rank_investigation(inv, scope)
-        rows = graph.query("MATCH (a:Artifact) RETURN a.json").result_set
+        rows = graph.query("MATCH (a:Artifact) WHERE a.json IS NOT NULL RETURN a.json").result_set
         assert len(rows) == 1
-        assert json.loads(rows[0][0]) == result.model_dump()
+        assert load_handoff(rows[0][0], stage="rank", incident_id=inv.incident_id,
+                            scope_ref=scope.scope_ref) == result
         assert result.candidates[0].id == "service:payment"
         assert result.candidates[0].components["severity"] == 6.1
         assert "config:INC-1001/c1" in result.candidates[0].evidence
