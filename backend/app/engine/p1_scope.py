@@ -1,8 +1,12 @@
+"""
+P1 turns single anchor service from P0 into a small, bounded, read-only evidence picture.
+"""
+
 import math
 from collections import defaultdict
 
 from backend.app.engine.contracts import Investigation, ScopeResult, ScopeService
-from backend.app.engine.scope_policy import series_identity, scope_fingerprint, remember_scope
+from backend.app.engine.scope_policy import series_identity, scope_fingerprint, remember_scope, scored_modalities
 from backend.app.graph import queries
 from backend.app.graph.client import graph_for
 from backend.app.graph.gateway import ReadGateway, admit_payload, PayloadAdmissionError
@@ -313,6 +317,13 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
             if not coverage.intersection(labels):
                 gaps.append({'node_id': sid, 'kind': kind, 'coverage': 'unknown' if truncated else 'absent',
                              'suggestion': 'Request bounded additional telemetry.'})
+        # Records exist but none can be scored: a 0 severity here means "not measured", not "normal".
+        scored = scored_modalities(selected_obs, sid)
+        for modality, kind in (('metric', 'unscored_metrics'), ('log', 'unscored_logs'), ('trace', 'unscored_traces')):
+            if scored.get(modality) is False:
+                gaps.append({'node_id': sid, 'kind': kind, 'coverage': 'present_unscored',
+                             'suggestion': f'{modality.capitalize()} records are present but carry no z-score; '
+                                           'severity for this modality is not measured. Provide baseline statistics at ingest.'})
         stat = service_statistics(sid, selected_obs, selected_changes, onset, trace_context=trace_context, trace_query_complete=trace_complete, change_context_ms=settings.change_context_ms)
         stat.criticality = service.get('criticality', 0.0)
         stats.append(stat)

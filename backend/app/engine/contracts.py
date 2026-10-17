@@ -1,5 +1,4 @@
-"""Frozen handoff contracts (§4.6) — typed, small, no transcripts move.
-
+"""
 These Pydantic models are the P0 output and the API/E2E contract surface.
 """
 
@@ -77,7 +76,7 @@ class InvestigationWindow(BaseModel):
 
 
 class Investigation(Versioned):
-    """P0 output (§4.3): the object every later phase consumes."""
+    """P0 output : the object every later phase consumes."""
     incident_id: str
     session_graph: str
     symptom: str
@@ -195,7 +194,7 @@ class StructuredClaim(BaseModel):
 
 
 class HypothesisRecord(Versioned):
-    """Persisted hypothesis (§4.6) — also the Track-02 memory surface."""
+    """Persisted hypothesis , also the Track-02 memory surface."""
     id: str
     candidate: str
     branch_id: str | None = None

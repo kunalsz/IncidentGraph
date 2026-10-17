@@ -52,6 +52,25 @@ def test_payment_scope_and_statistics(investigation):
 
 
 @pytest.mark.integration
+def test_unscored_modalities_are_gaps_not_silent_zeros(investigation):
+    inv, graph = investigation
+    result = scope_investigation(inv)
+    gaps = {(g["node_id"], g["kind"]): g for g in result.evidence_gaps}
+    # The authored fixture's spans and logs carry no z, so their severity is not measured.
+    for sid in ("service:checkout", "service:payment"):
+        assert gaps[(sid, "unscored_traces")]["coverage"] == "present_unscored"
+        assert gaps[(sid, "unscored_logs")]["coverage"] == "present_unscored"
+    stats = {s.id: s for s in result.services}
+    assert stats["service:payment"].sev_l == 0 and stats["service:payment"].sev_tc == 0
+    # Metrics carry z, so they are scored; a service with no logs is a blind spot, not unscored.
+    assert ("service:payment", "unscored_metrics") not in gaps
+    assert ("service:cart", "unscored_logs") not in gaps and ("service:cart", "no_logs") in gaps
+    row = graph.query("MATCH (g:EvidenceGap {id: $id}) RETURN g.missing_kind", params={
+        "id": f"gap:{inv.incident_id}:service:payment:unscored_traces"}).result_set
+    assert row == [["unscored_traces"]]
+
+
+@pytest.mark.integration
 def test_instance_evidence_and_window_filter(investigation):
     inv, graph = investigation
     graph.query("""

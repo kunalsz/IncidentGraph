@@ -460,6 +460,10 @@ def _contextual_tool(name, graph, context, args):
         stat = next(s for s in scope.services if s.id == sid)
         result = dict(stat.model_dump(), node_id=sid)
         result['vector'] = {'metric': stat.sev_m, 'log': stat.sev_l, 'trace': stat.sev_tc}
+        # True: scored; False: records present but unscored (0 means not measured); None: no records.
+        from backend.app.engine.scope_policy import scored_modalities
+        scored = scored_modalities(own)
+        result['scored'] = {m: scored.get(m) for m in ('metric', 'log', 'trace')}
         result['top_series'] = [r['properties'] for r in own if r['type'] == 'MetricAnomaly'][:5]
         return result
     if name == 'get_recent_changes':
@@ -568,7 +572,7 @@ TOOLS: dict[str, ToolSpec] = {spec.name: spec for spec in [
     _spec("get_neighborhood",
           '(service_id, hops=1, direction="both") -> {nodes, edges}',
           "Annotated adjacency / scope traversal", 1, t_get_neighborhood),
-    _spec("get_severity", "(node_id, window_min=30) -> {vector, top_series}",
+    _spec("get_severity", "(node_id, window_min=30) -> {vector, scored, top_series}",
           "TORAI-style severity vector + gamma-pinned series", 1, t_get_severity),
     _spec("get_recent_changes",
           "(service_id, window_min=120) -> {changes, proximity_score}",
