@@ -1,15 +1,10 @@
-"""P0 — TRIGGER & RESOLVE (§4.3).
+"""P0 — TRIGGER & RESOLVE.
 
 Inputs: symptom text ("checkout latency up"), optional alert id, optional
 trigger from Detector. Entity linking: alias table + fuzzy match against
 Service|Instance names; unresolved anchors -> clarify/abstain, never guess.
 Output: Investigation{anchor_service, window:[t0-15m, t1+15m], budget};
 writes the Incident node and AFFECTS edge into the session graph.
-
-Zero-LLM path: with LLM_PROVIDER=none (default for Day 1) P0 is fully
-deterministic — entity linking is lexical, no LLM call is made. The
-optional tiny LLM call (symptom parsing fallback) lands with the agent
-loop on Day 2.
 """
 
 import logging
@@ -19,8 +14,7 @@ import uuid
 
 from backend.app.engine import linking
 from backend.app.engine.budget import BudgetMeter
-from backend.app.engine.contracts import (Investigation, InvestigationWindow,
-                                          ResolvedAnchor)
+from backend.app.engine.contracts import (Investigation, InvestigationWindow,ResolvedAnchor)
 from backend.app.graph.client import session_graph
 from config import tuning
 
@@ -32,7 +26,7 @@ class MissingOnsetError(ValueError):
 
 
 class UnresolvedAnchorError(Exception):
-    """Raised when the symptom's anchor cannot be resolved — abstain, never guess."""
+    """Raised when the symptom's anchor cannot be resolved; abstain, never guess."""
 
     def __init__(self, anchor: ResolvedAnchor):
         self.anchor = anchor

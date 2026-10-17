@@ -1,18 +1,18 @@
 {
   "_provenance": "Derived from the OpenTelemetry Astronomy Shop demo architecture (https://opentelemetry.io/docs/demo/architecture/). Levels = topological depth over DEPENDS_ON (RADICE level(·) seed; P4 derives/overrides automatically).",
   "services": [
-    {"id": "service:frontend", "name": "frontend", "aliases": ["web", "front-end", "ui", "front end", "frontdoor"], "criticality": 0.9, "level": 0},
-    {"id": "service:checkout", "name": "checkout", "aliases": ["checkout service", "orders", "order service"], "criticality": 0.95, "level": 1},
-    {"id": "service:payment", "name": "payment", "aliases": ["payments", "payment service", "pay", "billing"], "criticality": 0.95, "level": 2},
-    {"id": "service:cart", "name": "cart", "aliases": ["carts", "cart service", "basket"], "criticality": 0.8, "level": 2},
-    {"id": "service:cart-cache", "name": "cart-cache", "aliases": ["valkey", "redis cart", "cart store", "cart-store"], "criticality": 0.8, "level": 3},
-    {"id": "service:recommendation", "name": "recommendation", "aliases": ["recs", "recommendations", "recommendation service", "recommender"], "criticality": 0.6, "level": 2},
-    {"id": "service:recommendation-cache", "name": "recommendation-cache", "aliases": ["recs cache", "recommendation cache"], "criticality": 0.5, "level": 3},
-    {"id": "service:shipping", "name": "shipping", "aliases": ["fulfillment", "shipping service"], "criticality": 0.7, "level": 2},
-    {"id": "service:quote", "name": "quote", "aliases": ["quotes", "shipping quotes", "quote service"], "criticality": 0.5, "level": 3},
-    {"id": "service:currency", "name": "currency", "aliases": ["fx", "currency service", "exchange rates"], "criticality": 0.6, "level": 3},
-    {"id": "service:product-catalog", "name": "product-catalog", "aliases": ["catalog", "catalogue", "products", "product catalog"], "criticality": 0.7, "level": 2},
-    {"id": "service:kafka", "name": "kafka", "aliases": ["message queue", "event bus", "broker"], "criticality": 0.85, "level": 2}
+    {"id": "service:frontend", "name": "frontend", "aliases": ["web", "front-end", "ui", "front end", "frontdoor", "storefront", "website", "web app", "web ui", "frontend service", "shop"], "criticality": 0.9, "level": 0},
+    {"id": "service:checkout", "name": "checkout", "aliases": ["checkout service", "orders", "order service", "checkout page", "checkout flow", "check out", "purchase", "purchases", "place order", "order placement", "order flow"], "criticality": 0.95, "level": 1},
+    {"id": "service:payment", "name": "payment", "aliases": ["payments", "payment service", "pay", "billing", "payment gateway", "payment processor", "payment processing", "card processing", "card payments", "credit card", "transactions"], "criticality": 0.95, "level": 2},
+    {"id": "service:cart", "name": "cart", "aliases": ["carts", "cart service", "basket", "baskets", "shopping cart", "shopping basket", "cart api"], "criticality": 0.8, "level": 2},
+    {"id": "service:cart-cache", "name": "cart-cache", "aliases": ["valkey", "redis cart", "cart store", "cart-store", "cart redis", "cart valkey", "valkey cache", "basket cache", "cart datastore"], "criticality": 0.8, "level": 3},
+    {"id": "service:recommendation", "name": "recommendation", "aliases": ["recs", "recommendations", "recommendation service", "recommender", "recommender service", "suggestions", "suggestion service", "recommended products", "related products", "personalization"], "criticality": 0.6, "level": 2},
+    {"id": "service:recommendation-cache", "name": "recommendation-cache", "aliases": ["recs cache", "recommendation cache", "recommendations cache", "recommender cache", "suggestions cache", "recs store"], "criticality": 0.5, "level": 3},
+    {"id": "service:shipping", "name": "shipping", "aliases": ["fulfillment", "shipping service", "fulfilment", "shipment", "shipments", "delivery", "deliveries", "shipping api"], "criticality": 0.7, "level": 2},
+    {"id": "service:quote", "name": "quote", "aliases": ["quotes", "shipping quotes", "quote service", "shipping quote", "shipping estimate", "shipping estimates", "delivery quote", "delivery quotes", "delivery estimate", "quoting"], "criticality": 0.5, "level": 3},
+    {"id": "service:currency", "name": "currency", "aliases": ["fx", "currency service", "exchange rates", "exchange rate", "currencies", "forex", "currency conversion", "currency converter"], "criticality": 0.6, "level": 3},
+    {"id": "service:product-catalog", "name": "product-catalog", "aliases": ["catalog", "catalogue", "products", "product catalog", "productcatalog", "product service", "product listing", "product listings", "product details", "item catalog", "inventory"], "criticality": 0.7, "level": 2},
+    {"id": "service:kafka", "name": "kafka", "aliases": ["message queue", "event bus", "broker", "message broker", "message bus", "event stream", "event streaming", "queue", "queues", "kafka queue", "consumer lag", "backpressure"], "criticality": 0.85, "level": 2}
   ],
   "depends_on": [
     {"from": "service:frontend", "to": "service:checkout", "calls_per_min": 120, "p99_ms": 400},
