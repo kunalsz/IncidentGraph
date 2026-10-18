@@ -1,6 +1,7 @@
 from backend.app.engine.contracts import Investigation, RankedCandidate, RankResult, ScopeResult, dump_handoff
 from backend.app.graph.client import graph_for
-from backend.app.graph.scorers import indicator_scores, latency_scores, random_walk, reciprocal_rank_fusion
+from backend.app.graph.scorers import (indicator_scores, latency_scores, neutral_walk,
+                                        random_walk, reciprocal_rank_fusion)
 from backend.app.ingest.normalize import is_error_log
 from config import tuning
 
@@ -21,7 +22,10 @@ def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) ->
                 and edge["source"] in nodes):
             observations.append({**nodes[edge["source"]], "service_id": edge["target"]})
     latency = latency_scores(ids, observations, scope.edges)
-    mass = random_walk(ids, scope.edges, scope.anchor_service)
+    # Cold ranking (benchmark) has no case-derived anchor; the anchored walk
+    # would then be a constant prior, so it is opt-in via the policy name.
+    mass = (neutral_walk(ids, scope.edges) if rank_policy == "rrf_anchor_neutral"
+            else random_walk(ids, scope.edges, scope.anchor_service))
     components = {}
     flags = {sid: [] for sid in ids}
     evidence = {sid: set() for sid in ids}
@@ -49,7 +53,8 @@ def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) ->
             if "error_logs" not in flags[sid]:
                 flags[sid].append("error_logs")
     scores, ranks = reciprocal_rank_fusion(components)
-    weights = {name: float(rank_policy == "baseline_rrf" or name == "severity")
+    weights = {name: float(rank_policy in ("baseline_rrf", "rrf_anchor_neutral")
+                          or name == "severity")
                for name in ("phi1", "phi3", "severity", "rwr", "deploy_proximity")}
     if rank_policy == "severity_only":
         # Keep all measured components/ranks as diagnostics; only severity votes.
