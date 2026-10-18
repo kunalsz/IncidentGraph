@@ -1,0 +1,6 @@
+# Presentation service dependencies. The investigation engine it drives has its
+# own imports (falkordb, pandas, pyarrow); run this service in the project venv,
+# or install those alongside these.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.0
