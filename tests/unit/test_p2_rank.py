@@ -90,3 +90,75 @@ def test_rule_flags_survive_top_k_and_order_is_stable(monkeypatch):
     assert result.candidates[1].rule_flags == ["self_time"]
     assert result == rank_candidates(scope)
     assert result.n_candidates == 2
+
+
+def test_explicit_policies_preserve_diagnostics_and_default(monkeypatch):
+    from backend.app.engine.contracts import dump_handoff, load_handoff
+    from backend.app.eval import p2_ablation as ab
+
+    monkeypatch.setattr(tuning, "TOP_K_CANDIDATES", 1)
+    scope = ScopeResult(
+        incident_id="policies", anchor_service="service:frontend", window={"t0": 0, "t1": 2},
+        services=[ScopeService(id="service:frontend", sev_m=1.0),
+                  ScopeService(id="service:root", sev_m=40.0),
+                  ScopeService(id="service:flagged", self_time_flag=True)],
+        nodes=[{"id": "service:" + n, "type": "Service", "properties": {}}
+               for n in ("frontend", "root", "flagged")],
+        edges=[], evidence_gaps=[], n_series_in_scope=0, truncated=False)
+    baseline = rank_candidates(scope)
+    assert baseline == rank_candidates(scope, rank_policy="baseline_rrf")
+    severity = rank_candidates(scope, rank_policy="severity_only")
+    assert baseline.candidates[0].id == "service:frontend"
+    assert severity.candidates[0].id == "service:root"
+    assert severity.branch_ids == ["service:root", "service:flagged"]
+    by_id = {c.id: c for c in baseline.candidates}
+    expected = ab.fuse({c.id: c.components for c in baseline.candidates}, {"severity": 1.0})
+    for c in severity.candidates:
+        assert c.score == pytest.approx(expected[c.id])
+        assert c.components == by_id[c.id].components
+        assert c.component_ranks == by_id[c.id].component_ranks
+        assert c.evidence == by_id[c.id].evidence
+        assert c.rule_flags == by_id[c.id].rule_flags
+    assert severity.config["rank_policy"] == "severity_only"
+    assert severity.config["component_weights"] == {
+        "phi1": 0.0, "phi3": 0.0, "severity": 1.0, "rwr": 0.0, "deploy_proximity": 0.0}
+    assert severity.scope_ref == baseline.scope_ref == scope.scope_ref
+    assert severity.indicators == baseline.indicators
+    assert load_handoff(dump_handoff("rank", severity), stage="rank",
+                        incident_id=scope.incident_id, scope_ref=scope.scope_ref) == severity
+    with pytest.raises(ValueError, match="unknown P2 rank policy"):
+        rank_candidates(scope, rank_policy="typo")
+
+
+@pytest.mark.parametrize("policy", ["baseline_rrf", "severity_only"])
+def test_rank_investigation_forwards_and_persists_policy(monkeypatch, policy):
+    from types import SimpleNamespace
+    from backend.app.engine import p2_rank
+    from backend.app.engine.contracts import Investigation, load_handoff
+
+    scope = ScopeResult(incident_id="forward", anchor_service="a", window={"t0": 0, "t1": 2},
+        services=[ScopeService(id="a")],
+        nodes=[{"id": "a", "type": "Service", "properties": {}}],
+        edges=[], evidence_gaps=[], n_series_in_scope=0, truncated=False)
+    inv = Investigation(incident_id="forward", anchor_service="a", window=scope.window,
+                        session_graph="incidentgraph:session:forward", symptom="test", budget={})
+    writes = []
+    monkeypatch.setattr(p2_rank, "graph_for", lambda n: SimpleNamespace(
+        query=lambda query, params: writes.append(params)))
+    result = p2_rank.rank_investigation(inv, scope, rank_policy=policy)
+    assert result.config["rank_policy"] == policy
+    assert load_handoff(writes[0]["payload"], stage="rank", incident_id=inv.incident_id,
+                        scope_ref=scope.scope_ref) == result
+
+
+@pytest.mark.parametrize("value", [0.0, 5.0])
+def test_severity_policy_ties_keep_pagerank_then_id(value):
+    scope = ScopeResult(
+        incident_id="ties", anchor_service="a", window={"t0": 0, "t1": 2},
+        services=[ScopeService(id=s, sev_m=value) for s in ("a", "b", "c")],
+        nodes=[{"id": s, "type": "Service", "properties": {"pagerank": float(s == "c")}}
+               for s in ("a", "b", "c")], edges=[], evidence_gaps=[],
+        n_series_in_scope=0, truncated=False)
+    result = rank_candidates(scope, rank_policy="severity_only")
+    assert [c.id for c in result.candidates] == ["c", "a", "b"]
+    assert all(c.score == (1 / 62 if value else 0.0) for c in result.candidates)

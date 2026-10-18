@@ -312,7 +312,9 @@ def _run_branch_calls(graph, investigation: Investigation, branch_id: str,
     return {"branch_id": branch_id, "bundle": bundle,
             "evidence_ids": fetched["evidence_ids"], "verdict": verdict,
             "escalation": escalation, "hypotheses": scored,
-            "generated": len(raw_candidates), "rejected": rejected, "slots": slots}
+            "generated": len(raw_candidates), "rejected": rejected, "slots": slots,
+            **({"partial_error": "all proposals rejected: " + "; ".join(rejected)}
+               if rejected and not candidates else {})}
 
 
 def _consolidate(branch_id: str, verdict: NodeVerdict, evidence_ids: list[str],
@@ -324,8 +326,24 @@ def _consolidate(branch_id: str, verdict: NodeVerdict, evidence_ids: list[str],
         "children": children,
         "allowed_candidate_ids": [branch_id] + [child["node_id"] for child in children],
     }
-    response = llm.complete("consolidate", load_prompt("consolidate"),
-                            json.dumps(payload), tier="default", max_tokens=800)
+    system, user = load_prompt("consolidate"), json.dumps(payload)
+    # IDs can dominate the structured output. Allow room for both evidence
+    # lists plus prose, with a per-call ceiling and the existing ledger as the
+    # authoritative (atomic) admission check. This is planning, not tokenization.
+    refs = sorted(set(evidence_ids).union(
+        *(child.get("evidence_ids", []) for child in children)))
+    output_limit = min(4096, max(1600, 1024 + 2 * len(json.dumps(refs).encode())))
+    if isinstance(llm, LLMClient):
+        ledger = llm.meter.as_dict()
+        available = (llm.meter.budget.max_tokens - ledger["tokens_charged"]
+                     - ledger["tokens_committed"]
+                     - len(system.encode()) - len(user.encode()) - 256)
+        if available <= 0:
+            raise BudgetExceeded("tokens", llm.meter.budget.max_tokens + 1,
+                                 llm.meter.budget.max_tokens)
+        output_limit = min(output_limit, available)
+    response = llm.complete("consolidate", system, user,
+                            tier="default", max_tokens=output_limit)
     result = BranchVerdict(**response.json())
     allowed = {branch_id} | {child["node_id"] for child in children}
     if result.node_id != branch_id or (result.local_root_cause is not None
@@ -390,6 +408,7 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
     node_verdicts = {}
     branch_evidence = {}
     branches = []
+    execution_errors = {}
 
     def run_nodes(ids, allocation):
         # At most workers futures exist; do not submit an unbounded queue and
@@ -427,11 +446,14 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
         nonlocal truncated
         node = result["branch_id"]
         if "error" in result:
-            truncated = truncated or result.get("exhausted", False)
+            execution_errors[node] = result["error"]
+            truncated = True
             meter.release_hypothesis_slots(node)
             branches.append(BranchVerdict(node_id=node, reason=result["error"], status="unexplored"))
             return
         truncated = truncated or bool(result.get("partial_error"))
+        if result.get("partial_error"):
+            execution_errors[node] = result["partial_error"]
         node_verdicts[node] = result["verdict"]
         branch_evidence[node] = result["evidence_ids"]
         evidence_rows.extend(_evidence_rows(result["bundle"], result["evidence_ids"], investigation.incident_id))
@@ -456,20 +478,26 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
 
     def consolidate(node):
         nonlocal truncated
+        if node in execution_errors:
+            return BranchVerdict(node_id=node, reason=f"branch execution failed: {execution_errors[node]}",
+                                 status="partial")
         children = [_child_payload(child, node_verdicts[child], branch_evidence[child])
-                    for child in sorted(set(callees.get(node, []))) if child in node_verdicts]
+                    for child in sorted(set(callees.get(node, [])))
+                    if child in node_verdicts and child not in execution_errors]
         try:
             return _consolidate(node, node_verdicts[node], branch_evidence[node], children, llm)
         except (BudgetExceeded, LLMError, ValueError) as exc:
-            truncated = truncated or isinstance(exc, BudgetExceeded)
-            return BranchVerdict(node_id=node, reason=f"consolidation skipped: {exc}", status="partial")
+            truncated = True
+            execution_errors[node] = f"consolidation skipped: {exc}"
+            return BranchVerdict(node_id=node, reason=execution_errors[node], status="partial")
 
     branches.extend(consolidate(node) for node in branch_ids if node in node_verdicts)
     # One outgoing round only. Shared neighbors execute once, but every parent
     # retains its relationship. No out-of-scope evidence/candidates are admitted.
     parents = {}
     for branch in list(branches):
-        if branch.confidence >= tuning.CONFIDENCE_GATE_THETA:
+        if (branch.node_id in execution_errors or branch.status == "unexplored"
+                or branch.confidence >= tuning.CONFIDENCE_GATE_THETA):
             continue
         neighbors = sorted(set(callees.get(branch.node_id, [])) - set(branch_ids))
         if neighbors:
@@ -501,13 +529,11 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
         meter.release_hypothesis_slots(node)
     for event in expansions:
         scheduled = {node for batch in event["batches"] for node in batch}
-        event["completed_ids"] = sorted(scheduled & set(node_verdicts))
-        event["failed_ids"] = sorted(scheduled - set(node_verdicts))
-        event["status"] = "partial" if event["failed_ids"] or any(
-            r.get("partial_error") for r in xresults if r["branch_id"] in scheduled) else "success"
-        event["errors"] = [{"branch_id": r["branch_id"], "error": r.get("error") or r.get("partial_error")}
-                           for r in xresults if r["branch_id"] in scheduled
-                           and ("error" in r or "partial_error" in r)]
+        event["completed_ids"] = sorted((scheduled & set(node_verdicts)) - set(execution_errors))
+        event["failed_ids"] = sorted(scheduled & set(execution_errors))
+        event["status"] = "partial" if event["failed_ids"] else "success"
+        event["errors"] = [{"branch_id": node, "error": execution_errors[node]}
+                           for node in event["failed_ids"]]
     # Reconsolidate affected parents against all retained expanded siblings.
     affected = set(parents) & set(node_verdicts)
     if xresults:
@@ -532,6 +558,7 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
         truncated = True
     budget = meter.as_dict()
     budget["persistence_errors"] = persistence_errors
+    budget["p3_execution_errors"] = dict(execution_errors)
     budget["p3_scheduling"] = {"policy": "fair-slots-v2-reflection-off", "primary_slots": plan,
         "expansion_slots": xplan,
         "branches": [{"branch_id": r["branch_id"], "generated": r.get("generated", 0),

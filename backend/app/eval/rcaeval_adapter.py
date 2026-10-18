@@ -26,12 +26,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from backend.app.eval import baseline_scale as bscale
 from backend.app.ingest import normalize
 
 OB_TOPOLOGY = Path(__file__).resolve().parent.parent / "seed" / "rcaeval_ob_topology.json"
 
 WINDOW_HALF_S = 600          # RCAEval --length 20 -> 600 samples each side (1 Hz)
-Z_CAP = 6.0                  # sentinel for a zero-variance baseline with deviation
+Z_CAP = 6.0                  # per-minute log/trace count z when the baseline has no variance
+LEVEL_CONVENTION = "dependency_depth_v1"  # what policy._service_levels accepts as authoritative
 SPAN_BUDGET = 6_000          # total spans written per case (deterministic selection)
 ERROR_SPAN_BUDGET = 3_000    # of which reserved for traces carrying error spans
 LOG_ERROR_CAP = 2_000        # error log records written per case
@@ -107,31 +109,51 @@ def series_stats(before: pd.Series, after: pd.Series, after_times: list[int]) ->
     """Baseline statistics + peak/onset anomaly samples for one metric series.
 
     Emits up to two samples: the peak |z| post-injection row and the first
-    post-injection row (so P1's ±60 s n-sigma rule sees the onset). A
-    zero-variance baseline with a deviating window admits no z; we cap at
-    ±Z_CAP rather than divide by zero (`z_capped` flags the sentinel).
+    post-injection row (so P1's ±60 s n-sigma rule sees the onset).
+
+    Measured-spread baselines (std > 0 for z, IQR > 0 for gamma) are scored
+    exactly as before. A baseline with no spread is scored by
+    `baseline_scale` (IQR -> std -> relative floor), so `z` and `gamma`
+    agree and an isolated blip against a flat baseline scores 0 (see that
+    module). `z_capped` flags a floor-scaled (non-measured) deviation.
+    Without finite baseline observations, samples retain their values but
+    baseline statistics, z, and gamma remain unavailable (None).
     """
-    base = before.astype(float).dropna()
+    base = before.astype(float).replace([math.inf, -math.inf], float("nan")).dropna()
     win = after.astype(float)
-    valid = win.dropna()
+    valid = win.replace([math.inf, -math.inf], float("nan")).dropna()
     mean = float(base.mean()) if len(base) else 0.0
     std = float(base.std(ddof=1)) if len(base) > 1 else 0.0
     if not math.isfinite(std):
         std = 0.0
     median = float(base.median()) if len(base) else 0.0
     iqr = (float(base.quantile(0.75)) - float(base.quantile(0.25))) if len(base) else 0.0
+    scale = bscale.baseline_scale(base.tolist())
+    post = valid.tolist()
+    if iqr > 0:
+        gamma = float((valid - median).abs().max() / iqr) if len(valid) else 0.0
+    else:
+        gamma = bscale.gamma(post, scale)
     stats = {
-        "baseline_mean": mean, "baseline_std": std,
-        "baseline_median": median, "baseline_iqr": iqr if iqr > 0 else 0.0,
-        "gamma": float((valid - median).abs().max() / iqr) if iqr > 0 and len(valid) else 0.0,
+        "baseline_mean": mean if len(base) else None,
+        "baseline_std": std if len(base) else None,
+        "baseline_median": median if len(base) else None,
+        "baseline_iqr": (iqr if iqr > 0 else 0.0) if len(base) else None,
+        "gamma": gamma, "scale_source": scale.source,
     }
     if valid.empty:
         return {"stats": stats, "samples": []}
+    floor_path = std <= 0
+    floor_persistent = floor_path and bscale.persistent(post, scale)
 
-    def z_of(value: float) -> tuple[float, bool]:
-        if std > 0:
+    def z_of(value: float) -> tuple[float | None, bool]:
+        if scale.source == "unavailable":
+            return None, False
+        if not floor_path:
             return (value - mean) / std, False
-        return (Z_CAP if value != mean else 0.0), value != mean
+        if value == mean or not floor_persistent:
+            return 0.0, False
+        return bscale.deviation(value, scale), True
 
     positions = []
     peak_position = int(valid.sub(mean).abs().idxmax())
@@ -296,6 +318,99 @@ def latency_z(spans: pd.DataFrame, t0_s: int, t1_s: int, inject_s: int,
 
 
 # ---------------------------------------------------------------------------
+# Topology levels
+# ---------------------------------------------------------------------------
+
+def dependency_depths(topology: dict, entities: set[str] | None = None) -> dict[str, int]:
+    """Shortest dependency depth from the DEPENDS_ON roots (BFS), by service id.
+
+    Roots are services that call others but are never called. Isolated
+    services (no edges) get no depth: nothing in the topology justifies one.
+    Edges are restricted to `entities` when given, matching what `load_case`
+    actually writes.
+    """
+    def name(value: str) -> str:
+        return value.replace("service:", "")
+    edges = [(dep["from"], dep["to"]) for dep in topology["depends_on"]
+             if entities is None or (name(dep["from"]) in entities and name(dep["to"]) in entities)]
+    callers = {a for a, _ in edges}
+    callees = {b for _, b in edges}
+    depth = {root: 0 for root in sorted(callers - callees)}
+    frontier = list(depth)
+    while frontier:
+        nxt = []
+        for node in frontier:
+            for a, b in edges:
+                if a == node and b not in depth:
+                    depth[b] = depth[node] + 1
+                    nxt.append(b)
+        frontier = nxt
+    return depth
+
+
+def authoritative_levels(topology: dict, entities: set[str] | None = None) -> set[str]:
+    """Matching BFS levels in dependency components safe for the P4 level veto.
+
+    Reject a whole weakly connected component if it has a directed cycle,
+    an unknown/unreachable endpoint, or an edge decreasing in BFS depth.
+    Nondecreasing edges then guarantee that no dependency path contradicts
+    the levels of a marked candidate/anchor pair. Equal-depth DAG edges are
+    safe (and occur in the shipped topology); isolated services stay unmarked.
+    """
+    depths = dependency_depths(topology, entities)
+    known = {svc["id"] for svc in topology["services"]}
+    outgoing, neighbors = {}, {}
+    for dep in topology["depends_on"]:
+        a, b = dep["from"], dep["to"]
+        if entities is not None and (a.replace("service:", "") not in entities
+                                     or b.replace("service:", "") not in entities):
+            continue
+        outgoing.setdefault(a, set()).add(b)
+        outgoing.setdefault(b, set())
+        neighbors.setdefault(a, set()).add(b)
+        neighbors.setdefault(b, set()).add(a)
+
+    safe = set()
+    unseen = set(neighbors)
+    while unseen:
+        start = unseen.pop()
+        component, pending = {start}, [start]
+        while pending:
+            node = pending.pop()
+            for neighbor in neighbors[node]:
+                if neighbor not in component:
+                    component.add(neighbor)
+                    unseen.discard(neighbor)
+                    pending.append(neighbor)
+
+        if any(node not in known or node not in depths for node in component):
+            continue
+        if any(depths[b] < depths[a] for a in component for b in outgoing[a]):
+            continue
+
+        # Kahn's algorithm also rejects equal-depth cycles, which a depth
+        # monotonicity check alone cannot detect. Use sets to deduplicate edges.
+        indegree = dict.fromkeys(component, 0)
+        for a in component:
+            for b in outgoing[a]:
+                indegree[b] += 1
+        pending = [node for node in component if indegree[node] == 0]
+        visited = 0
+        while pending:
+            node = pending.pop()
+            visited += 1
+            for neighbor in outgoing[node]:
+                indegree[neighbor] -= 1
+                if indegree[neighbor] == 0:
+                    pending.append(neighbor)
+        if visited == len(component):
+            safe.update(component)
+
+    return {svc["id"] for svc in topology["services"]
+            if svc["id"] in safe and int(svc.get("level", -1)) == depths[svc["id"]]}
+
+
+# ---------------------------------------------------------------------------
 # Graph writes (batched UNWIND; MERGE-on-id)
 # ---------------------------------------------------------------------------
 
@@ -349,15 +464,21 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
     if case["traces"] is not None:
         entities |= {TRACE_SERVICE_MAP.get(name, name) for name in
                      case["traces"]["serviceName"].astype(str).unique()}
+    # Depth is an architectural fact: derive it from the full authored edge set,
+    # never from whichever services happened to emit telemetry in this case.
+    authoritative = authoritative_levels(topology)
     service_rows = []
     for entity in sorted(entities):
         meta = known.get(entity, {})
-        service_rows.append({
+        row = {
             "id": f"service:{entity}", "name": entity,
             "aliases": json.dumps(meta.get("aliases", [])),
             "criticality": float(meta.get("criticality", 0.0)),
             "level": int(meta.get("level", 0)),
-        })
+        }
+        if f"service:{entity}" in authoritative:
+            row["level_convention"] = LEVEL_CONVENTION
+        service_rows.append(row)
     _write_nodes(graph, "Service", service_rows)
     dep_pairs = [{"src": dep["from"], "dst": dep["to"]}
                  for dep in topology["depends_on"]

@@ -19,7 +19,7 @@ from config import tuning
 FIXTURES = ("payment_failure", "cart_failure", "recommendation_slowdown")
 
 
-def evaluate_fixture(name):
+def evaluate_fixture(name, *, rank_policy=tuning.P2_RANK_POLICY):
     fixture = json.loads((loader.FIXTURES_DIR / f"{name}.json").read_text())
     topology = json.loads((loader.SEED_DIR / "topology.json").read_text())
     graph_name = f"incidentgraph:session:eval-{uuid.uuid4().hex}"
@@ -46,11 +46,12 @@ def evaluate_fixture(name):
             window=InvestigationWindow(t0=incident["start_ts"] - tuning.WINDOW_PAD_MS,
                                        t1=incident["start_ts"] + tuning.WINDOW_PAD_MS),
         )
-        ranking = rank_investigation(inv, scope_investigation(inv))
+        ranking = rank_investigation(inv, scope_investigation(inv), rank_policy=rank_policy)
         ranks = [candidate.id for candidate in ranking.candidates]
         expected = fixture["expected"]["root_cause_service"]
         rank = ranks.index(expected) + 1 if expected in ranks else None
-        return {"fixture": name, "root_rank": rank, "top3_pass": rank is not None and rank <= 3,
+        return {"fixture": name, "rank_policy": rank_policy,
+                "rank_policy_version": tuning.P2_RANK_POLICY_VERSION, "root_rank": rank, "top3_pass": rank is not None and rank <= 3,
                 "n_candidates": ranking.n_candidates, "ranks": ranks,
                 "mrr": 1 / rank if rank else 0.0, "llm_calls": 0,
                 "truncated": ranking.truncated}
@@ -63,6 +64,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixtures", action="store_true")
     parser.add_argument("--rank-only", action="store_true")
+    parser.add_argument("--rank-policy", choices=tuning.P2_RANK_POLICIES,
+                        default=tuning.P2_RANK_POLICY,
+                        help="P2 fusion policy for fixture/RCAEval runs (independent of replay --policy)")
     parser.add_argument("--rcaeval", type=str, default=None,
                         help="path to a fetched RE2-OB data dir (e.g. data/RE2-OB)")
     parser.add_argument("--subset", type=int, default=None,
@@ -73,6 +77,8 @@ def main():
                         help="with --rcaeval: output directory")
     parser.add_argument("--with-agent", action="store_true",
                         help="reserved for explicit client-factory callers; never implicitly contacts a paid provider")
+    parser.add_argument("--p2-ablation", type=str, metavar="RUN_DIR",
+                        help="offline P2 fusion ablation over a recorded run dir (no graph/LLM/data needed)")
     parser.add_argument("--compare", nargs=2, metavar=("LEFT", "RIGHT"))
     parser.add_argument("--replay", type=str)
     parser.add_argument("--experiments", type=str)
@@ -83,6 +89,12 @@ def main():
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--policy", default="p2", choices=["p2", "shadow", "corrected", "legacy_membership", "eligibility"])
     args = parser.parse_args()
+    if args.rank_policy != tuning.P2_RANK_POLICY and (
+            args.p2_ablation or args.compare or args.replay or args.experiments or args.engine_experiments):
+        parser.error("--rank-policy applies only to fixture/RCAEval runs, not replay/experiments")
+    if args.p2_ablation:
+        from backend.app.eval.p2_ablation import main as ablation_main
+        return ablation_main([args.p2_ablation])  # more options: python -m backend.app.eval.p2_ablation -h
     if args.compare:
         from backend.app.eval.comparison import main as comparison_main
         return comparison_main([*args.compare, "--output", args.report])
@@ -106,10 +118,10 @@ def main():
         cases = [c.strip() for c in args.cases.split(",")] if args.cases else None
         return rcaeval_runner.run(args.rcaeval, subset=args.subset, cases=cases,
                                   report_dir=args.report,
-                                  with_agent=args.with_agent)
+                                  with_agent=args.with_agent, rank_policy=args.rank_policy)
     if not args.rank_only:
         parser.error("only --rank-only evaluation is available until P3 through P6 are implemented")
-    results = [evaluate_fixture(name) for name in FIXTURES]
+    results = [evaluate_fixture(name, rank_policy=args.rank_policy) for name in FIXTURES]
     print(json.dumps({"mode": "synthetic_fixture_rank_only", "cases": results,
                       "ac_at_1": sum(r["root_rank"] == 1 for r in results) / len(results),
                       "ac_at_3": sum(r["top3_pass"] for r in results) / len(results),

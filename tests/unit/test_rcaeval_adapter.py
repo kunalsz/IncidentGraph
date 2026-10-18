@@ -81,11 +81,20 @@ class TestSeriesStats:
         onset = min(samples, key=lambda s: s["ts"])
         assert onset["ts"] == 100 * 1000
 
-    def test_zero_variance_baseline_caps(self):
-        stats = self._series([2.0, 2.0, 2.0], [2.0, 7.0])
+    def test_zero_variance_baseline_scores_persistent_change(self):
+        # Flat baseline, window that leaves it and stays out: scored by the
+        # floor-scale policy (flagged), no longer the Z_CAP sentinel. The full
+        # policy is covered in test_baseline_scale.py.
+        stats = self._series([2.0] * 20, [2.0] + [7.0] * 20)
         peak = max(stats["samples"], key=lambda s: abs(s["z"]))
-        assert peak["z"] == adapter.Z_CAP
+        assert abs(peak["z"]) >= 3
         assert peak["z_capped"] is True
+        assert stats["stats"]["gamma"] >= 3
+
+    def test_zero_variance_single_blip_is_not_an_anomaly(self):
+        stats = self._series([2.0] * 20, [2.0, 7.0, 2.0, 2.0])
+        assert all(s["z"] == 0.0 for s in stats["samples"])
+        assert stats["stats"]["gamma"] == 0.0
 
     def test_zero_variance_no_change_is_zero(self):
         stats = self._series([2.0, 2.0], [2.0, 2.0])
@@ -99,10 +108,12 @@ class TestSeriesStats:
 
     def test_gamma_and_baseline_stats(self):
         stats = self._series([1.0, 1.0, 1.0, 1.0, 3.0], [8.0])
-        # median 1.0, IQR 0 -> gamma unavailable (0.0), stored stats present
+        # median 1.0, IQR 0 -> stored IQR stays 0, but gamma now comes from the
+        # next scale on the ladder (std) instead of silently becoming 0.0.
         assert stats["stats"]["baseline_median"] == 1.0
         assert stats["stats"]["baseline_iqr"] == 0.0
-        assert stats["stats"]["gamma"] == 0.0
+        assert stats["stats"]["scale_source"] == "std"
+        assert stats["stats"]["gamma"] > 3
 
 
 class TestMinuteZ:

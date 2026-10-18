@@ -5,7 +5,14 @@ from backend.app.ingest.normalize import is_error_log
 from config import tuning
 
 
-def rank_candidates(scope: ScopeResult) -> RankResult:
+def validate_rank_policy(rank_policy):
+    if rank_policy not in tuning.P2_RANK_POLICIES:
+        raise ValueError(f"unknown P2 rank policy: {rank_policy}")
+    return rank_policy
+
+
+def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) -> RankResult:
+    validate_rank_policy(rank_policy)
     ids = [service.id for service in scope.services]
     nodes = {node["id"]: node for node in scope.nodes}
     observations = []
@@ -42,6 +49,12 @@ def rank_candidates(scope: ScopeResult) -> RankResult:
             if "error_logs" not in flags[sid]:
                 flags[sid].append("error_logs")
     scores, ranks = reciprocal_rank_fusion(components)
+    weights = {name: float(rank_policy == "baseline_rrf" or name == "severity")
+               for name in ("phi1", "phi3", "severity", "rwr", "deploy_proximity")}
+    if rank_policy == "severity_only":
+        # Keep all measured components/ranks as diagnostics; only severity votes.
+        scores = {sid: 1 / (tuning.RRF_EPSILON + ranks[sid]["severity"])
+                  if "severity" in ranks[sid] else 0.0 for sid in ids}
     ordered = sorted(ids, key=lambda sid: (-scores[sid], -nodes[sid]["properties"].get("pagerank", 0), sid))
     selected = set(ordered[:tuning.TOP_K_CANDIDATES]) | {sid for sid in ids if flags[sid]}
     candidates = [RankedCandidate(
@@ -56,7 +69,11 @@ def rank_candidates(scope: ScopeResult) -> RankResult:
         branch_ids=[sid for sid in ordered if sid in selected],
         indicators=indicator_scores(observations), audit=audit,
         n_candidates=len(ids), truncated=scope.truncated,
-        config={"rrf_epsilon": tuning.RRF_EPSILON, "rwr_restart": tuning.RWR_PHI,
+        config={"rank_policy": rank_policy, "rank_policy_version": tuning.P2_RANK_POLICY_VERSION,
+                "component_weights": weights,
+                "component_ranks": "all_measured_components",
+                "candidate_tie_policy": "score_desc_pagerank_desc_id_asc",
+                "rrf_epsilon": tuning.RRF_EPSILON, "rwr_restart": tuning.RWR_PHI,
                 "rwr_iterations": tuning.RWR_ITERATIONS, "top_k": tuning.TOP_K_CANDIDATES,
                 "walk_direction": "caller_to_dependency", "tie_policy": "average_rank",
                 "missing_signal": "excluded", "latency_source": "scoped_service_spans",
@@ -64,14 +81,15 @@ def rank_candidates(scope: ScopeResult) -> RankResult:
     )
 
 
-def rank_investigation(investigation: Investigation, scope: ScopeResult) -> RankResult:
+def rank_investigation(investigation: Investigation, scope: ScopeResult, *,
+                       rank_policy=tuning.P2_RANK_POLICY) -> RankResult:
     if not investigation.session_graph.startswith("incidentgraph:session:"):
         raise ValueError("P2 requires an isolated session graph")
     if (scope.incident_id != investigation.incident_id
             or scope.anchor_service != investigation.anchor_service
             or scope.window != investigation.window):
         raise ValueError("scope does not match investigation")
-    result = rank_candidates(scope)
+    result = rank_candidates(scope, rank_policy=rank_policy)
     graph_for(investigation.session_graph).query(
         "MERGE (a:Artifact {id: $id}) "
         "SET a.kind = 'stage-view', a.stage = 'strix', a.version = 2, "

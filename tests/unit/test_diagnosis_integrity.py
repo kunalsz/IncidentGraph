@@ -122,7 +122,8 @@ def test_rejected_or_unvalidated_report_no_action_or_composition(monkeypatch, st
     llm.complete.assert_not_called()
 
 
-def test_expansion_failure_preserves_successful_sibling(monkeypatch):
+@pytest.mark.parametrize("failure_stage", ["branch", "consolidation"])
+def test_expansion_failure_preserves_successful_sibling(monkeypatch, failure_stage):
     graph = Mock()
     monkeypatch.setattr("backend.app.graph.client.graph_for", lambda _: graph)
     scope = scope_for("service:s0", "service:s1", "service:s2")
@@ -132,7 +133,7 @@ def test_expansion_failure_preserves_successful_sibling(monkeypatch):
     ranking.branch_ids = ["service:s0"]
     ranking.scope_ref = scope.scope_ref
     def calls(graph, investigation, node, llm, meter, *args):
-        if node == "service:s1":
+        if node == "service:s1" and failure_stage == "branch":
             raise LLMError("optional sibling failed")
         return {"branch_id": node, "bundle": {}, "evidence_ids": [],
                 "verdict": p3.NodeVerdict(node_id=node, is_abnormal=True,
@@ -141,12 +142,19 @@ def test_expansion_failure_preserves_successful_sibling(monkeypatch):
                     "candidate": {"candidate": node, "text": "test", "initial_score": 0.0, "evidence_refs": []},
                     "reward": .7, "reflection": {}, "sc": .5}]}
     def consolidate(node, *args):
+        if node == "service:s1" and failure_stage == "consolidation":
+            raise LLMError("optional sibling consolidation failed")
         return BranchVerdict(node_id=node, local_root_cause=node,
                              confidence=.1 if node == "service:s0" else .8)
     monkeypatch.setattr(p3, "_run_branch_calls", calls)
     monkeypatch.setattr(p3, "_consolidate", consolidate)
     result = p3.investigate_investigation(INV, scope, ranking, llm=Mock())
-    assert {h.candidate for h in result.hypotheses} == {"service:s0", "service:s2"}
+    expected = {"service:s0", "service:s2"}
+    if failure_stage == "consolidation":
+        expected.add("service:s1")  # retain genuine proposals from before the failure
+    assert {h.candidate for h in result.hypotheses} == expected
+    assert result.expansions[0]["completed_ids"] == ["service:s2"]
+    assert result.expansions[0]["errors"]
     assert any(b.local_root_cause == "service:s2" for b in result.branches)
     assert any(e.get("status") == "partial" and "service:s1" in e.get("failed_ids", [])
                for e in result.expansions)
@@ -209,6 +217,97 @@ def test_consolidation_rejects_undisclosed_candidate():
                              has_error_logs=True, has_metric_anomaly=True)
     with pytest.raises(ValueError, match="undisclosed"):
         p3._consolidate("service:s0", verdict, [], [], llm)
+
+
+@pytest.mark.parametrize("failure", [None, "self_verify", "hypothesis_batch", "invalid_proposals",
+                                   "consolidate", "truncated_consolidation"])
+def test_expansion_requires_evidence_gap_not_execution_failure(monkeypatch, failure):
+    from backend.app.agent.llm import LLMClient, MockProvider
+    meter = p3.BudgetMeter()
+    calls = []
+    class Provider(MockProvider):
+        def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            node = payload.get("service_id", payload.get("node_id"))
+            task = kwargs["task"]
+            calls.append((node, task))
+            if node == "service:s0":
+                if task == failure:
+                    raise LLMError("execution failed")
+                if task == "hypothesis_batch" and failure == "invalid_proposals":
+                    return LLMResponse('{"hypotheses":[{"candidate":"outside"}]}', 1, 1, "mock")
+                if task == "consolidate" and failure == "truncated_consolidation":
+                    return LLMResponse('{"node_id":"service:s0"}', 1, 1, "mock", finish_reason="length")
+            return super().complete(**kwargs)
+    monkeypatch.setattr("backend.app.graph.client.graph_for", lambda _: Mock())
+    monkeypatch.setattr(p3.bundle_mod, "fetch_branch_bundle", lambda graph, node, window: {
+        "bundle": {"metrics": [], "logs": []}, "evidence_ids": []})
+    scope = scope_for("service:s0", "service:s1", "service:s2")
+    scope.edges = [{"source": "service:s0", "target": n, "type": "DEPENDS_ON"}
+                   for n in ("service:s1", "service:s2", "service:outside")]
+    ranking = _ranking([.8, .1, .1])
+    ranking.branch_ids = ["service:s0"]
+    ranking.scope_ref = scope.scope_ref
+    result = p3.investigate_investigation(INV, scope, ranking, meter=meter,
+                                         llm=LLMClient(meter, provider=Provider()))
+    assert result.hypotheses == []  # empty evidence never creates filler proposals
+    assert not any(node == "service:outside" for node, _ in calls)
+    if failure is None:
+        assert result.expansions and result.expansions[0]["status"] == "success"
+        assert result.expansions[0]["completed_ids"] == ["service:s1", "service:s2"]
+    else:
+        assert result.expansions == []
+        assert {node for node, _ in calls} == {"service:s0"}
+        assert result.truncated
+        assert "service:s0" in result.budget["p3_execution_errors"]
+        branch = result.branches[0]
+        assert branch.local_root_cause is None and branch.confidence == 0
+        assert branch.reason and branch.status in ("partial", "unexplored")
+
+
+@pytest.mark.parametrize("nrefs", [0, 25, 100])
+def test_consolidation_output_allowance_scales_with_structured_evidence(nrefs):
+    from backend.app.agent.llm import LLMClient, MockProvider
+    class Provider(MockProvider):
+        def complete(self, **kwargs):
+            self.limit = kwargs["max_tokens"]
+            return super().complete(**kwargs)
+    provider = Provider()
+    meter = p3.BudgetMeter()
+    refs = [f"metric:long-service-name/observation-{i:04d}" for i in range(nrefs)]
+    verdict = p3.NodeVerdict(node_id="service:s0", is_abnormal=True,
+                             has_error_logs=False, has_metric_anomaly=True)
+    result = p3._consolidate("service:s0", verdict, refs, [], LLMClient(meter, provider=provider))
+    assert result.evidence_ids == refs
+    assert 1600 <= provider.limit <= 4096
+    if nrefs:
+        assert provider.limit > 1600
+
+
+@pytest.mark.parametrize("proxied", [False, True])
+def test_consolidation_output_allowance_respects_remaining_budget(proxied):
+    from backend.app.agent.llm import LLMClient, MockProvider
+    from config.tuning import InvestigationBudget
+    class Provider(MockProvider):
+        def complete(self, **kwargs):
+            self.limit = kwargs["max_tokens"]
+            return super().complete(**kwargs)
+    provider = Provider()
+    # Enough for input + a smaller output allowance, not the normal 1600.
+    meter = p3.BudgetMeter(InvestigationBudget(max_tokens=2500))
+    # Match the isolated runner's RPC meter interface, not its concrete type.
+    class MeterProxy:
+        def __getattr__(self, name):
+            return getattr(meter, name)
+    client_meter = MeterProxy() if proxied else meter
+    verdict = p3.NodeVerdict(node_id="service:s0", is_abnormal=False,
+                             has_error_logs=False, has_metric_anomaly=False)
+    p3._consolidate("service:s0", verdict, [], [], LLMClient(client_meter, provider=provider))
+    assert 0 < provider.limit < 1600
+    assert meter.tokens_charged == 2500
+    with pytest.raises(p3.BudgetExceeded):
+        p3._consolidate("service:s0", verdict, [], [], LLMClient(client_meter, provider=provider))
+    assert meter.llm_calls == 1
 
 
 def test_check_failure_is_terminal_even_with_permissive_aggregate():

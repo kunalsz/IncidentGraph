@@ -20,7 +20,8 @@ from pathlib import Path
 from backend.app.engine.budget import BudgetMeter
 from backend.app.engine.contracts import Investigation, InvestigationWindow
 from backend.app.engine.p1_scope import scope_investigation
-from backend.app.engine.p2_rank import rank_investigation
+from backend.app.engine.p2_rank import rank_investigation, validate_rank_policy
+from config import tuning
 from backend.app.eval import evaluator as ev
 from backend.app.eval import rcaeval_adapter as adapter
 from backend.app.graph.client import client, graph_for
@@ -202,15 +203,18 @@ def _set_universes(result, universes):
 
 def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=None,
              run_id=None, export_policy="p2", graph_factory=None, db_factory=None,
-             budget=None, fusion_options=None, primary_branches=None):
+             budget=None, fusion_options=None, primary_branches=None,
+             rank_policy=tuning.P2_RANK_POLICY):
     case_dir, report_dir = Path(case_dir), Path(report_dir)
     run_id = run_id or uuid.uuid4().hex
     graph_name = f"incidentgraph:session:eval-{run_id}-{uuid.uuid4().hex}"
     result = _failed_case_result(case_dir, RuntimeError("pending"))
-    result.update(run_id=run_id, session_graph=graph_name)
+    result.update(run_id=run_id, session_graph=graph_name, rank_policy=rank_policy,
+                  rank_policy_version=tuning.P2_RANK_POLICY_VERSION)
     meter = BudgetMeter(budget or BENCH_BUDGET)
     created, db, start, stage = False, None, time.monotonic(), "load"
     try:
+        validate_rank_policy(rank_policy)
         result["data"] = _data_provenance(case_dir)
         db = (db_factory or client)()
         graph = (graph_factory or graph_for)(graph_name)
@@ -240,7 +244,7 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
             return scope_investigation(inv, full_scope=True, max_nodes=10_000, max_series=10_000,
                                        settings=SCOPE_BENCHMARK_SETTINGS)
         def benchmark_p2(inv, scoped):
-            ranked = rank_investigation(inv, scoped)
+            ranked = rank_investigation(inv, scoped, rank_policy=rank_policy)
             if primary_branches is not None:
                 ranked.branch_ids = ranked.branch_ids[:primary_branches]
             return ranked
@@ -264,6 +268,8 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
             stage = state.failed_stage
             raise RuntimeError("shared_runner_incomplete")
         scope, ranking = state.scope, state.ranking
+        # Historical field name: this is the selected pre-P5 P2 order, not
+        # necessarily baseline_rrf. rank_policy identifies the effective arm.
         baseline = export_ranks(ranking)
         result["baseline_order"] = ev.service_rank_entities(baseline)
         _set_universes(result, ev.candidate_universes(loaded["window_frame"], ranking, baseline))
@@ -346,16 +352,19 @@ def aggregate_resources(results):
 
 
 def run(data_dir, subset=None, cases=None, report_dir="output/rcaeval-v2", with_agent=False,
-        llm=None, *, llm_factory=None, export_policy="p2"):
+        llm=None, *, llm_factory=None, export_policy="p2", rank_policy=tuning.P2_RANK_POLICY):
+    validate_rank_policy(rank_policy)
     data_dir, root = Path(data_dir), Path(report_dir)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:10]
     out = root/run_id
     out.mkdir(parents=True, exist_ok=False)
     case_dirs = discover_cases(data_dir, subset, cases)
     if not case_dirs:
-        atomic_json(out/"_summary.json", {"run_id": run_id, "n_cases": 0, "n_failed": 0, "status": "empty"})
+        atomic_json(out/"_summary.json", {"run_id": run_id, "n_cases": 0, "n_failed": 0, "status": "empty",
+                                         "rank_policy": rank_policy, "rank_policy_version": tuning.P2_RANK_POLICY_VERSION})
         return 1
-    prov = provenance()
+    prov = {**provenance(), "rank_policy": rank_policy,
+            "rank_policy_version": tuning.P2_RANK_POLICY_VERSION}
     try:
         prov["db_version"] = client().info().get("redis_version", "unknown")
     except Exception:
@@ -369,10 +378,12 @@ def run(data_dir, subset=None, cases=None, report_dir="output/rcaeval-v2", with_
             parse_case_name(path.name)
             seen.add(path.name)
             result = run_case(path, out, with_agent=with_agent, llm=llm,
-                llm_factory=llm_factory, run_id=run_id, export_policy=export_policy)
+                llm_factory=llm_factory, run_id=run_id, export_policy=export_policy,
+                rank_policy=rank_policy)
         except Exception as exc:
             result = _failed_case_result(path, exc)
-            result.update(run_id=run_id, failed_stage="dispatch", persistence="atomic")
+            result.update(run_id=run_id, failed_stage="dispatch", persistence="atomic",
+                          rank_policy=rank_policy, rank_policy_version=tuning.P2_RANK_POLICY_VERSION)
             # Duplicate records get a distinct request slot, never overwrite a prior result.
             suffix = f".request-{len(results)}" if path.name in [r["case"] for r in results] else ""
             safe_name = path.name if re.fullmatch(r"[A-Za-z0-9_-]+", path.name) else f"invalid-{len(results)}"
@@ -384,6 +395,7 @@ def run(data_dir, subset=None, cases=None, report_dir="output/rcaeval-v2", with_
     failed = sum(r["status"] != "ok" for r in results)
     summary = {"schema_version": 2, "run_id": run_id, "protocol": PROTOCOL,
         "mode": "agent_shadow" if with_agent else "p2_offline", "n_cases": len(results),
+        "rank_policy": rank_policy, "rank_policy_version": tuning.P2_RANK_POLICY_VERSION,
         "n_failed": failed, "status": "failed" if failed else "ok", "provenance": prov,
         "metrics": evaluate(results), "cases": results,
         "costs": aggregate_resources(results)}

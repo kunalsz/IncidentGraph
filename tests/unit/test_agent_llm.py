@@ -289,6 +289,30 @@ class TestRealProviderParsing:
         assert (response.text, response.tokens_in, response.tokens_out) == ("yo", 5, 2)
 
 
+@pytest.mark.parametrize("provider_name,stop", [("openai", "length"), ("anthropic", "max_tokens")])
+@pytest.mark.parametrize("text", ['{"node_id":"service:x"}', '{"node_id":'])
+def test_output_limit_stop_is_rejected_and_charged(provider_name, stop, text):
+    def handler(request):
+        if provider_name == "openai":
+            body = {"choices": [{"message": {"content": text}, "finish_reason": stop}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3}}
+        else:
+            body = {"content": [{"text": text}], "stop_reason": stop,
+                    "usage": {"input_tokens": 7, "output_tokens": 3}}
+        return httpx.Response(200, json=body)
+    transport = httpx.MockTransport(handler)
+    provider = (OpenAIProvider("test", transport=transport) if provider_name == "openai"
+                else AnthropicProvider("test", transport=transport))
+    meter = BudgetMeter()
+    client = LLMClient(meter, provider=provider, retries=2)
+    for _ in range(2):
+        with pytest.raises(llm.LLMTruncatedError, match="truncated"):
+            client.complete("consolidate", "s", "u", max_tokens=10)
+    assert meter.llm_calls == 2  # neither retried nor cached
+    assert meter.tokens == 20 and client.stats["failures"] == 2
+    assert meter.as_dict()["tokens_committed"] == 0
+
+
 class TestPromptFiles:
     def test_all_prompts_load_and_declare_version(self):
         for name in ("self_verify", "hypothesis_batch", "consolidate",

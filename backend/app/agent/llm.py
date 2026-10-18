@@ -37,6 +37,10 @@ class LLMError(Exception):
     """Provider call failed after retries, or the response was unusable."""
 
 
+class LLMTruncatedError(LLMError):
+    """Provider stopped at its output limit; even parseable JSON is incomplete."""
+
+
 class LLMUnavailable(LLMError):
     """No provider is configured (LLM_PROVIDER=none) or the task needs one."""
 
@@ -65,7 +69,9 @@ def load_prompt(name: str) -> str:
 
 class LLMResponse:
     def __init__(self, text: str, tokens_in: int, tokens_out: int, model: str,
-                 cached: bool = False, usage_status: str = "known"):
+                 cached: bool = False, usage_status: str = "known",
+                 finish_reason: str | None = None):
+        self.finish_reason = finish_reason
         self.usage_status = usage_status
         self.text = text
         self.tokens_in = tokens_in
@@ -75,6 +81,8 @@ class LLMResponse:
 
     def json(self) -> dict:
         """Strict finite object parsing; only a complete code fence is allowed."""
+        if self.finish_reason in ("length", "max_tokens", "model_length"):
+            raise LLMTruncatedError(f"response truncated: {self.finish_reason}")
         text = self.text.strip()
         fence = re.match(r"^```(?:json)?\s*(.*?)```\s*$", text, re.DOTALL)
         if fence:
@@ -510,7 +518,8 @@ class OpenAICompatibleProvider(_MultiKeyProvider):
                 raise ValueError("content must be text")
             return LLMResponse(text, ti if known else 0, to if known else 0,
                                body.get("model") or model,
-                               usage_status="known" if known else "unknown")
+                               usage_status="known" if known else "unknown",
+                               finish_reason=body["choices"][0].get("finish_reason"))
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMError("malformed provider envelope") from exc
 
@@ -555,7 +564,8 @@ class AnthropicProvider(LLMProvider):
                 raise ValueError("content must be text")
             return LLMResponse(text, ti if known else 0, to if known else 0,
                                body.get("model") or model,
-                               usage_status="known" if known else "unknown")
+                               usage_status="known" if known else "unknown",
+                               finish_reason=body.get("stop_reason"))
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMError("malformed provider envelope") from exc
 
@@ -667,7 +677,8 @@ class LLMClient:
                 self.meter.record_cache_hit()
                 self.stats["cache_hits"] += 1
                 return LLMResponse(cached.text, cached.tokens_in, cached.tokens_out,
-                                   cached.model, cached=True, usage_status=cached.usage_status)
+                                   cached.model, cached=True, usage_status=cached.usage_status,
+                                   finish_reason=cached.finish_reason)
             self._inflight.add(fingerprint)
         try:
             for attempt in range(self.retries + 1):
@@ -702,6 +713,8 @@ class LLMClient:
                 self.meter.settle_attempt(lease, "success",
                     (response.tokens_in, response.tokens_out), response.usage_status)
                 try:
+                    if response.finish_reason in ("length", "max_tokens", "model_length"):
+                        raise LLMTruncatedError(f"{task} response truncated: {response.finish_reason}")
                     if task in TASK_SCHEMAS:
                         validate_task(task, response.json())
                 except (ValueError, TypeError) as exc:
@@ -709,7 +722,8 @@ class LLMClient:
                 self.meter.check(phase)
                 with self._condition:
                     self._cache[fingerprint] = LLMResponse(response.text, response.tokens_in,
-                        response.tokens_out, response.model, usage_status=response.usage_status)
+                        response.tokens_out, response.model, usage_status=response.usage_status,
+                        finish_reason=response.finish_reason)
                     self.stats["calls"] += 1
                 return response
         except BaseException:
