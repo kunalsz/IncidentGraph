@@ -97,7 +97,9 @@ def test_same_service_hypotheses_cannot_share_or_branch_rescue(world):
     assert set(val.hypotheses) == {"bad", "good"}  # no consolidated branches needed
     assert val.hypotheses["bad"].modalities == []
     assert val.hypotheses["good"].modalities == ["metrics"]
-    assert fused.winner == "good" and "bad" not in fused.alternatives
+    assert fused.winner is None
+    assert fused.alternatives == []
+    assert not fused.service_ranking[0]["eligible"]
     assert {h.id: h.confidence for h in fused.fused} == {"good": .7, "bad": .4}
 
 

@@ -131,9 +131,6 @@ def fuse_investigation(investigation, ranking: RankResult, invest: InvestResult,
         item.rank = position
 
     # Preserve rejected scores for audit, but never let weights revive a veto.
-    eligible = [item for item in fused
-                if item.status in ("validated", "partial")]
-    winner = eligible[0] if eligible else None
     # Stable predeclared slots, not best-of-many. Missing slots contribute zero.
     # A vetoed slot is never replaced by a later successful sibling.
     slots = {service: sorted((h for h in fused if h.candidate == service), key=lambda h: h.id)[:per_service_slots]
@@ -145,8 +142,12 @@ def fuse_investigation(investigation, ranking: RankResult, invest: InvestResult,
         representative = next((h for h in items if h.status in ("validated", "partial")), None)
         if representative:
             representatives[service] = representative
-    alternatives = [item.id for item in representatives.values()
-                    if item.candidate != (winner.candidate if winner else None)]
+    # Choose services by the same fixed-slot aggregate used by corrected ranking,
+    # not an individual sibling's peak score (including when slots > 1).
+    eligible_services = sorted(representatives, key=lambda service: (
+        -service_scores[service], rank_by_service[service], service))
+    winner = representatives[eligible_services[0]] if eligible_services else None
+    alternatives = [representatives[service].id for service in eligible_services[1:]]
     service_ranking = []
     for c in sorted(ranking.candidates, key=lambda c: (c.rank, c.id)):
         representative = representatives.get(c.id)

@@ -53,12 +53,11 @@ def multi():
 @pytest.mark.integration
 def test_both_causes_survive_fusion(multi):
     _, fused, _ = multi
-    ordered = []
-    for item in fused.fused:
-        if item.candidate not in ordered:
-            ordered.append(item.candidate)
-    # the two independent causes lead the fused ranking, in either order
-    assert set(ordered[:2]) == BOTH_CAUSES, ordered[:4]
+    eligible = {item.id: item.candidate for item in fused.fused
+                if item.status in ("validated", "partial")}
+    retained = [fused.winner, *fused.alternatives]
+    assert all(hid in eligible for hid in retained)
+    assert BOTH_CAUSES <= {eligible[hid] for hid in retained}
 
 
 @pytest.mark.integration

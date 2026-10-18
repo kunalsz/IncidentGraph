@@ -22,10 +22,11 @@ def _service_levels(scope):
             and node.get("properties", {}).get("level_convention") == "dependency_depth_v1"}
 
 
-def _callers_closure(candidate, scope):
+def _callers_closure(candidate, edges):
+    """Callers connected to the candidate by validated propagation links only."""
     callers = {}
-    for edge in scope.edges:
-        if edge["type"] == "DEPENDS_ON":
+    for edge in edges:
+        if edge["type"] == "DEPENDS_ON" and edge.get("support"):
             callers.setdefault(edge["target"], set()).add(edge["source"])
     closure, frontier = set(), [candidate]
     while frontier:
@@ -151,8 +152,12 @@ def validate_investigation(investigation: Investigation, scope: ScopeResult,
             raise ValueError("duplicate hypothesis identity")
         assessment = assess_hypothesis(graph, investigation, scope, hypothesis, onset_ts)
         other = {h.candidate for h in invest.hypotheses if h.candidate in allowed and h.candidate != hypothesis.candidate}
-        callers = _callers_closure(hypothesis.candidate, scope)
-        assessment.chain_coherence = validators.chain_coherence(len(other & callers), len(other))
+        path = assessment.evidence_path
+        callers = _callers_closure(hypothesis.candidate, path.edges) if path and path.found else set()
+        explained = other & callers
+        # No propagation proof is a neutral zero bonus, never a validator veto.
+        # Keep the established one/two-branch mapping only for supported chains.
+        assessment.chain_coherence = validators.chain_coherence(len(explained), len(other)) if explained else 0.0
         if not assessments and llm is not None:
             try:
                 response = llm.complete("critique", load_prompt("critique"),
