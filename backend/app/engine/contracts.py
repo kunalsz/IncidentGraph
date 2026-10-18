@@ -184,22 +184,44 @@ class NodeVerdict(BaseModel):
     completeness: UnitScore = 0.0
 
 
+ClaimKind = Literal["service_abnormality", "metric_excursion", "dependency_propagation", "change_association"]
+
+
 class StructuredClaim(BaseModel):
     """Explicit targets only; prose never supplies missing claim parameters."""
-    metric: str | None = Field(default=None, max_length=512)
+    metric: str | None = Field(default=None, min_length=1, max_length=512)
     direction: Literal["up", "down"] | None = None
-    dependency_source: str | None = Field(default=None, max_length=512)
-    dependency_target: str | None = Field(default=None, max_length=512)
-    change_id: str | None = Field(default=None, max_length=512)
+    dependency_source: str | None = Field(default=None, min_length=1, max_length=512)
+    dependency_target: str | None = Field(default=None, min_length=1, max_length=512)
+    change_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
-class HypothesisRecord(Versioned):
+class ProposalClaim(BaseModel):
+    """Shared provider/persisted claim schema; invalid structure never becomes generic."""
+    claim_kind: ClaimKind = "service_abnormality"
+    claim: StructuredClaim | None = None
+
+    @model_validator(mode="after")
+    def matching_claim_fields(self):
+        required = {
+            "service_abnormality": set(),
+            "metric_excursion": {"metric", "direction"},
+            "dependency_propagation": {"dependency_source", "dependency_target"},
+            "change_association": {"change_id"},
+        }[self.claim_kind]
+        fields = self.claim.model_dump(exclude_none=True) if self.claim is not None else {}
+        if (set(fields) != required or
+                (not required and self.claim is not None) or
+                any(isinstance(value, str) and not value.strip() for value in fields.values())):
+            raise ValueError("structured claim fields do not match claim_kind")
+        return self
+
+
+class HypothesisRecord(Versioned, ProposalClaim):
     """Persisted hypothesis , also the Track-02 memory surface."""
     id: str
     candidate: str
     branch_id: str | None = None
-    claim_kind: Literal["service_abnormality", "metric_excursion", "dependency_propagation", "change_association"] = "service_abnormality"
-    claim: StructuredClaim | None = None
     text: str = Field(max_length=16000)
     status: Literal["unexplored", "partial", "closed"] = "partial"
     initial_score: float = 0.0
@@ -319,7 +341,7 @@ class FuseResult(Versioned):
     alternatives: list[str] = Field(default_factory=list)  # hypothesis ids, conf >= theta
     rwr_top3_share: UnitScore = 0.0
     service_ranking: list[dict] = Field(default_factory=list)
-    ranking_policy: Literal["deterministic_first_shadow", "corrected_h_eligible_first", "bounded_p2_update_v1"] = "deterministic_first_shadow"
+    ranking_policy: Literal["deterministic_first_shadow", "corrected_h_eligible_first", "bounded_p2_update_v1", "conservative_p2_update_v1"] = "deterministic_first_shadow"
     config: dict = Field(default_factory=dict)
 
 

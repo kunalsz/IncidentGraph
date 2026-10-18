@@ -135,8 +135,9 @@ def _persist_hypotheses(graph, hypotheses: list[HypothesisRecord],
     rows = []
     for hypothesis in hypotheses:
         row = hypothesis.model_dump()
-        if isinstance(row.get("scope_ref"), dict):
-            row["scope_ref"] = json.dumps(row["scope_ref"], sort_keys=True)
+        for field in ("scope_ref", "claim"):
+            if isinstance(row.get(field), dict):
+                row[field] = json.dumps(row[field], sort_keys=True)
         row["reflection"] = json.dumps(row["reflection"])
         row["evidence"] = json.dumps(row["evidence"])
         row["contradicting"] = json.dumps(row["contradicting"])
@@ -238,6 +239,82 @@ def _evidence_rows(bundle: dict, evidence_ids: list[str],
             for source_id, meta in sorted(sources.items())]
 
 
+def _metric_claim_options(bundle: dict, evidence_ids: set[str],
+                          investigation: Investigation, branch_id: str) -> list[dict]:
+    """Bounded exact-column facts from the admitted, displayed branch evidence.
+
+    Match P4's qualification/onset rules, not prose or generic metric aliases.
+    These are selectable associations, never inferred causal mechanisms.
+    """
+    from backend.app.engine import policy
+    from backend.app.graph.validators import svar_lite
+
+    onset = investigation.onset_ts
+    if not policy.finite_number(onset) or bundle.get("service_id", branch_id) != branch_id:
+        return []
+    groups = {}
+    for metric in bundle.get("metrics", []):
+        column, ts = metric.get("column"), metric.get("ts")
+        if (metric.get("id") not in evidence_ids or not isinstance(column, str)
+                or not column.strip() or len(column) > 512
+                or metric.get("service_id", branch_id) != branch_id
+                or not policy.finite_number(ts)
+                or not investigation.window.t0 <= ts <= investigation.window.t1
+                or abs(ts - onset) > tuning.ONSET_DELTA_MS
+                or not policy.modality("MetricAnomaly", metric)
+                or svar_lite([metric])["verdict"] != "pass"):
+            continue
+        groups.setdefault(column, []).append(metric)
+    options = []
+    for column, records in sorted(groups.items()):
+        # Pin P4's peak-selector order independent of source row order.
+        records = sorted(records, key=lambda r: (-abs(r["z"]), r["id"]))
+        direction = records[0].get("direction")
+        if (direction not in ("up", "down") or svar_lite(records)["verdict"] != "pass"
+                or not all(r.get("direction") == direction and
+                           (r["z"] > 0 if direction == "up" else r["z"] < 0)
+                           for r in records)):
+            continue
+        options.append({"claim_kind": "metric_excursion",
+                        "claim": {"metric": column, "direction": direction},
+                        "evidence_refs": sorted({r["id"] for r in records})[:100]})
+    return options[:15]
+
+
+def _dependency_claim_options(bundle: dict, evidence_ids: set[str], branch_id: str) -> list[dict]:
+    """Offer only retained admitted same-trace pairs; never invent pairings."""
+    retained = {s.get("id") for s in bundle.get("spans", [])} & evidence_ids
+    options = {}
+    for pair in bundle.get("span_pairs", []):
+        source, target = pair.get("dependency_source"), pair.get("dependency_target")
+        refs = pair.get("evidence_refs")
+        if (pair.get("claim_eligible") is not True or target != branch_id
+                or not isinstance(source, str) or not source.strip() or len(source) > 512
+                or source == target or not isinstance(refs, list) or len(refs) != 2
+                or not all(isinstance(ref, str) for ref in refs) or len(set(refs)) != 2
+                or not set(refs) <= retained):
+            continue
+        key = (source, target, tuple(sorted(refs)))
+        options[key] = {"claim_kind": "dependency_propagation",
+                        "claim": {"dependency_source": source, "dependency_target": target},
+                        "evidence_refs": sorted(refs)}
+    return [options[key] for key in sorted(options)[:3]]
+
+
+def _admit_supported_claim(candidate: dict, options: list[dict]) -> None:
+    kind = candidate["claim_kind"]
+    if kind not in ("metric_excursion", "dependency_propagation"):
+        return
+    claim = {k: v for k, v in candidate["claim"].items() if v is not None}
+    refs = set(candidate["evidence_refs"])
+    matching = [o for o in options if o["claim_kind"] == kind and o["claim"] == claim]
+    if kind == "metric_excursion":
+        if not any(refs & set(o["evidence_refs"]) for o in matching):
+            raise ValueError("metric claim does not match a supported exact-column option and citation")
+    elif not any(set(o["evidence_refs"]) <= refs for o in matching):
+        raise ValueError("dependency claim requires an offered exact pair and both supporting citations")
+
+
 def _run_branch_calls(graph, investigation: Investigation, branch_id: str,
                       llm: LLMClient, meter: BudgetMeter, slots: int = 8) -> dict:
     """Pass A for one branch: bundle -> verify -> escalate -> hypotheses -> reflect."""
@@ -261,12 +338,15 @@ def _run_branch_calls(graph, investigation: Investigation, branch_id: str,
     # Repair baseline disables optional escalation and per-proposal reflection.
     # They cannot promote model confidence or consume slots before admission.
     escalation = None
+    claim_options = (_metric_claim_options(bundle, evidence_ids, investigation, branch_id)
+                     + _dependency_claim_options(bundle, evidence_ids, branch_id))
     try:
         batch_response = llm.complete(
         "hypothesis_batch", load_prompt("hypothesis_batch"),
         json.dumps({"service_id": branch_id,
                     "self_verify": verdict.model_dump(), "bundle": bundle,
-                    "allowed_candidate_ids": [branch_id], "max_hypotheses": slots}),
+                    "allowed_candidate_ids": [branch_id], "max_hypotheses": slots,
+                    "supported_claim_options": claim_options}),
         tier="default", max_tokens=1600)
     except (BudgetExceeded, LLMError, ValueError) as exc:
         return {"branch_id": branch_id, "bundle": bundle,
@@ -283,7 +363,10 @@ def _run_branch_calls(graph, investigation: Investigation, branch_id: str,
                 raise ValueError("undisclosed candidate")
             if not set(candidate["evidence_refs"]) <= evidence_ids:
                 raise ValueError("undisclosed evidence reference")
-            key = (candidate["candidate"], candidate["text"], tuple(sorted(candidate["evidence_refs"])))
+            _admit_supported_claim(candidate, claim_options)
+            key = (candidate["candidate"], candidate["claim_kind"],
+                   json.dumps(candidate["claim"], sort_keys=True), candidate["text"],
+                   tuple(sorted(candidate["evidence_refs"])))
             if key in seen:
                 raise ValueError("duplicate proposal")
             seen.add(key)
@@ -369,8 +452,12 @@ def _child_payload(child_id: str, verdict: NodeVerdict,
 def investigate_investigation(investigation: Investigation, scope: ScopeResult,
                               ranking: RankResult,
                               meter: BudgetMeter | None = None,
-                              llm: LLMClient | None = None) -> InvestResult:
-    """P3 entry point: bounded LLM investigation over P2's branch set."""
+                              llm: LLMClient | None = None, *,
+                              minimum_primary_coverage: int | None = None) -> InvestResult:
+    """P3 entry point; optional coverage floor borrows from expansion, not budget."""
+    if minimum_primary_coverage is not None and (
+            type(minimum_primary_coverage) is not int or minimum_primary_coverage < 0):
+        raise ValueError("minimum_primary_coverage must be a nonnegative integer or None")
     if not investigation.session_graph.startswith("incidentgraph:session:"):
         raise ValueError("P3 requires an isolated session graph")
     if ranking.incident_id != investigation.incident_id:
@@ -397,8 +484,20 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
     # Reserve fair branch capacity BEFORE bundles/provider work. Expansion has
     # a separate initial share; unused primary slots are released for expansion.
     expansion_share = int(meter.budget.max_hypotheses * meter.budget.expansion_slot_fraction)
-    plan = meter.allocate_hypothesis_slots(branch_ids,
-        meter.budget.max_hypotheses - expansion_share)
+    primary_limit = meter.budget.max_hypotheses - expansion_share
+    coverage = min(minimum_primary_coverage or 0, len(branch_ids))
+    if minimum_primary_coverage is not None:
+        ledger = meter.as_dict()
+        available = (meter.budget.max_hypotheses - ledger["hypotheses"]
+                     - ledger["hypothesis_slots_reserved"])
+        if available < coverage:
+            raise ValueError("requested minimum primary coverage exceeds available hypothesis slots")
+        primary_limit = max(primary_limit, coverage)
+    plan = meter.allocate_hypothesis_slots(branch_ids, primary_limit)
+    if any(plan[node] < 1 for node in branch_ids[:coverage]):
+        for node in branch_ids:
+            meter.release_hypothesis_slots(node)
+        raise ValueError("requested minimum primary coverage could not be allocated")
     truncated = False
     results = []
     expansions = []
@@ -463,6 +562,8 @@ def investigate_investigation(investigation: Investigation, scope: ScopeResult,
             record = HypothesisRecord(
                 id=f"h:{investigation.incident_id}:{node}:{index}",
                 candidate=node, branch_id=node, scope_ref=scope.scope_ref,
+                claim_kind=candidate.get("claim_kind", "service_abnormality"),
+                claim=candidate.get("claim"),
                 text=candidate["text"], initial_score=candidate.get("initial_score", 0.0),
                 confidence=result["verdict"].confidence,
                 confidence_rule=result["verdict"].confidence_rule,

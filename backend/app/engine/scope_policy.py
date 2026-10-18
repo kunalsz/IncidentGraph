@@ -103,6 +103,67 @@ def scored_modalities(records, service_id=None):
     return result
 
 
+def admitted_span_pairs(scope, service_id, onset_ts=None, max_pairs=3):
+    """Bounded error associations on exact already-admitted service dependencies.
+
+    No graph reads or ownership reassignment: a foreign span is usable only as
+    the other half of a policy-qualified pair. Ambiguous ownership is excluded.
+    """
+    from backend.app.engine import policy
+
+    services = {s.id for s in scope.services}
+    if service_id not in services or max_pairs <= 0:
+        return []
+    max_pairs = min(max_pairs, 3)
+    owners = {}
+    for edge in scope.edges:
+        if edge['type'] == 'OBSERVED_ON':
+            owners.setdefault(edge['source'], set()).add(edge['target'])
+    dependencies = {(e['source'], e['target']) for e in scope.edges
+                    if e['type'] == 'DEPENDS_ON' and e['source'] != e['target']
+                    and service_id in (e['source'], e['target'])
+                    and e['source'] in services and e['target'] in services}
+    pair_services = {sid for dependency in dependencies for sid in dependency}
+    spans, parents = {}, {}
+    for record in admitted_records(scope):
+        p, sid = record['properties'], record['id']
+        if (record['type'] != 'Span' or record['service_id'] not in pair_services
+                or len(owners.get(sid, ())) != 1
+                or not policy.finite_number(p.get('ts'))
+                or not scope.window.t0 <= p['ts'] <= scope.window.t1
+                or not policy.error_status(p.get('status'))):
+            continue
+        spans[sid] = {'kind': 'Span', 'props': p,
+                      'service': record['service_id'], 'positive': True}
+        if isinstance(p.get('trace_id'), str) and isinstance(p.get('span_id'), str):
+            parents.setdefault((record['service_id'], p['trace_id'], p['span_id']), []).append(sid)
+    center = onset_ts if policy.finite_number(onset_ts) else (scope.window.t0 + scope.window.t1) / 2
+    # Retain only the best few while scanning; never construct a broad pair dump.
+    selected = []
+    for child_id, child in spans.items():
+        c = child['props']
+        if not isinstance(c.get('trace_id'), str) or not isinstance(c.get('parent_id'), str):
+            continue
+        for source, target in sorted(dependencies):
+            if child['service'] != target:
+                continue
+            matches = parents.get((source, c['trace_id'], c['parent_id']), [])
+            # An ambiguous parent identity is not an exact matched pair.
+            if len(matches) != 1:
+                continue
+            parent_id = matches[0]
+            pair_records = {parent_id: spans[parent_id], child_id: child}
+            if not policy.propagation_support(pair_records, {'source': source, 'target': target}):
+                continue
+            selected.append({'dependency_source': source, 'dependency_target': target,
+                             'evidence_refs': [parent_id, child_id]})
+            selected.sort(key=lambda pair: (
+                max(abs(spans[s]['props']['ts'] - center) for s in pair['evidence_refs']),
+                pair['dependency_source'], pair['dependency_target'], pair['evidence_refs']))
+            del selected[max_pairs:]
+    return selected
+
+
 def admitted_records(scope, service_id=None):
     owners = {e['source']: e['target'] for e in scope.edges
               if e['type'] in ('OBSERVED_ON', 'CHANGED', 'DEPLOYED_AT')}

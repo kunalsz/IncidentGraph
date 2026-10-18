@@ -5,7 +5,11 @@ SERVICE_FIELDS = ('id', 'name', 'aliases', 'criticality', 'level', 'level_conven
 EVIDENCE_FIELDS = ('id', 'ts', 'metric', 'column', 'value', 'baseline_mean', 'baseline_std',
                    'z', 'gamma', 'direction', 'level', 'is_error', 'template_id', 'message',
                    'duration_us', 'start_us', 'trace_id', 'span_id', 'parent_id', 'trace_complete',
-                   'op', 'status', 'flag', 'version', 'kind', 'name', 'description', 'reason')
+                   'op', 'status', 'flag', 'version', 'kind', 'name', 'description', 'reason',
+                   'onset_clock_available', 'onset_valid_count', 'onset_qualified_count',
+                   'onset_longest_same_direction_run', 'onset_qualified_directions',
+                   'onset_representative_ts', 'onset_representative_direction',
+                   'post_deviation_directions')
 EDGE_FIELDS = ('invariant', 'weight', 'protocol', 'criticality')
 
 

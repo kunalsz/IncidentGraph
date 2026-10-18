@@ -3,7 +3,7 @@ Batch envelopes are strict; malformed proposals are rejected individually by P3.
 """
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
-from backend.app.engine.contracts import NodeVerdict, BranchVerdict, AgentRunResult
+from backend.app.engine.contracts import NodeVerdict, BranchVerdict, AgentRunResult, ProposalClaim
 
 SCHEMA_VERSION = "task-responses-v2"
 Score = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
@@ -23,7 +23,7 @@ class Consolidate(BranchVerdict):
 class Escalate(AgentRunResult):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-class Proposal(StrictResponse):
+class Proposal(ProposalClaim, StrictResponse):
     text: Text
     candidate: str
     evidence_refs: list[str] = Field(max_length=100)

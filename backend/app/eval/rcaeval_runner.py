@@ -204,7 +204,7 @@ def _set_universes(result, universes):
 def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=None,
              run_id=None, export_policy="p2", graph_factory=None, db_factory=None,
              budget=None, fusion_options=None, primary_branches=None,
-             rank_policy=tuning.P2_RANK_POLICY):
+             minimum_primary_coverage=None, rank_policy=tuning.P2_RANK_POLICY):
     case_dir, report_dir = Path(case_dir), Path(report_dir)
     run_id = run_id or uuid.uuid4().hex
     graph_name = f"incidentgraph:session:eval-{run_id}-{uuid.uuid4().hex}"
@@ -224,7 +224,8 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
                       aggregate_diagnostics=loaded["aggregate_diagnostics"])
         investigation = Investigation(incident_id=loaded["incident_id"], session_graph=graph_name,
             symptom="benchmark case (cold ranking)", anchor_service="service:frontend", budget={},
-            window=InvestigationWindow(t0=loaded["t0_ms"], t1=loaded["t1_ms"]))
+            window=InvestigationWindow(t0=loaded["t0_ms"], t1=loaded["t1_ms"]),
+            onset_ts=loaded.get("onset_ts"))
         stage = "p1_p2"
         from backend.app.engine.runner import run_investigation
         from backend.app.engine.p3_investigate import investigate_investigation
@@ -248,11 +249,15 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
             if primary_branches is not None:
                 ranked.branch_ids = ranked.branch_ids[:primary_branches]
             return ranked
+        def benchmark_p3(inv, scoped, ranked, meter=None, llm=None):
+            options = ({"minimum_primary_coverage": minimum_primary_coverage}
+                       if minimum_primary_coverage is not None else {})
+            return investigate_investigation(inv, scoped, ranked, meter=meter, llm=llm, **options)
         def benchmark_p5(inv, ranked, proposed, checked):
             return fuse_investigation(inv, ranked, proposed, checked, **(fusion_options or {}))
         state = run_investigation("benchmark case (cold ranking)", meter=meter, llm=local_llm,
             until_phase=5 if with_agent else 2,
-            phase_functions=(adapter_p0, benchmark_p1, benchmark_p2, investigate_investigation,
+            phase_functions=(adapter_p0, benchmark_p1, benchmark_p2, benchmark_p3,
                              validate_investigation, benchmark_p5, None))
         result["phase_events"] = state.events
         result["artifacts"] = {name: _dump(getattr(state, attr)) for name, attr in

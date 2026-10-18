@@ -163,6 +163,7 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
     if full_scope:
         service_query = service_query.replace('ORDER BY s.criticality', 'ORDER BY s.id = $anchor DESC, s.criticality')
     rows, overflow = gateway.read(service_query, {'anchor': investigation.anchor_service}, cap=node_cap)
+    service_overflow = overflow
     services = [_properties(row[0], settings)[0] for row in rows]
     if investigation.anchor_service not in {s['id'] for s in services}:
         raise ValueError('anchor service absent from bounded scope')
@@ -183,10 +184,12 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
     if onset is None:
         raise ValueError('scope requires authoritative incident onset')
     failures = []
-    def records(query, params, cap):
+    def records(query, params, cap, diagnostics=None):
         nonlocal overflow
         try:
             rows, truncated = gateway.read(query, params, cap=cap)
+            if diagnostics is not None:
+                diagnostics.update(returned=len(rows), overflow=truncated, status='ok')
             overflow |= truncated
             result = {}
             for node, sid, target in rows:
@@ -214,18 +217,24 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
                     result[record['id']] = record
             return [r for r in result.values() if r is not None]
         except Exception as exc:
+            if diagnostics is not None:
+                diagnostics['status'] = 'error'
             failures.append(type(exc).__name__)
             overflow = True
             return []
-    # Separate service/modality/pre-post fetch buckets before any shared cap.
-    # Sampling is onset-local within each side; no earliest-first all-modality prefix.
-    observations = []
+    # Retain bounded prefixes, then redistribute unused quota in stable bucket order.
+    # Re-reads replace (never append) a prefix and all participate in live validation.
+    observation_buckets = []
     bucket_count = len(ids) * 5 * 2
     quota = max(1, settings.raw_observations // max(1, bucket_count))
+    raw_retained = 0
     for sid in ids:
         for label in ('MetricAnomaly', 'LogEvent', 'Span', 'Trace', 'Alert'):
             for before in (False, True):
-                remaining = settings.raw_observations - len(observations)
+                bucket = dict(service_id=sid, modality=label, period='pre' if before else 'post',
+                              returned=0, overflow=False, status='unqueried', records=[])
+                observation_buckets.append(bucket)
+                remaining = settings.raw_observations - raw_retained
                 if remaining <= 0:
                     overflow = True
                     continue
@@ -234,10 +243,45 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
                     f'AND e:{label} AND e.ts ' + ('< $onset' if before else '>= $onset'))
                 query = query.replace('ORDER BY e.ts, e.id, sid',
                                       'ORDER BY e.ts ' + ('DESC' if before else 'ASC') + ', e.id, sid')
-                observations.extend(records(query, {'ids': [sid], 't0': window.t0,
-                                            't1': window.t1, 'onset': onset}, min(quota, remaining)))
+                bucket.update(query=query, params={'ids': [sid], 't0': window.t0,
+                                                  't1': window.t1, 'onset': onset})
+                bucket['records'] = records(query, bucket['params'], min(quota, remaining), bucket)
+                raw_retained += bucket['returned']
+    initial_overflow_buckets = sum(b['overflow'] for b in observation_buckets)
+    redistribution_queries = redistributed_records = 0
+    while raw_retained < settings.raw_observations:
+        active = [b for b in observation_buckets if b['overflow'] and b['status'] == 'ok']
+        if not active:
+            break
+        progressed = False
+        for index, bucket in enumerate(active):
+            # Reserve three reads (changes, edges, optional context), their replays,
+            # and the final publication-generation check before spending on a refill.
+            if len(gateway.diagnostics) + len(gateway.transcript) + 9 > settings.max_queries:
+                break
+            remaining = settings.raw_observations - raw_retained
+            if remaining <= 0:
+                break
+            extra = max(1, remaining // (len(active) - index))
+            old_count = bucket['returned']
+            refill = {}
+            replacement = records(bucket['query'], bucket['params'], old_count + extra, refill)
+            redistribution_queries += 1
+            if refill.get('status') != 'ok':
+                bucket['status'] = 'error'
+                continue
+            bucket.update(refill, records=replacement)
+            gained = bucket['returned'] - old_count
+            raw_retained += gained
+            redistributed_records += max(0, gained)
+            progressed |= gained > 0
+        if not progressed:
+            break
+    observations = [r for b in observation_buckets for r in b['records']]
+    observation_read_failures = sum(b['status'] == 'error' for b in observation_buckets)
+    change_diagnostics = {}
     changes = records(queries.SCOPE_CHANGES, {'ids': ids, 't0': max(0, onset-settings.change_context_ms),
-                                             't1': onset}, settings.changes)
+                                             't1': onset}, settings.changes, change_diagnostics)
     canonical = {}
     for record in observations + changes:
         key = record['id']
@@ -290,19 +334,28 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
     # Trace context is not evidence/candidate admission. Fetch only children of admitted spans.
     parents = [r for r in selected_obs if r['type'] == 'Span' and r['properties'].get('span_id')]
     trace_context = []
+    context_overflow, context_failed = False, False
     trace_complete = not overflow
     if parents:
         try:
             context_rows, context_overflow = gateway.read(
-                'MATCH (sp:Span) WHERE sp.trace_id IN $traces AND sp.parent_id IN $parents RETURN ' + queries.projection('sp', queries.EVIDENCE_FIELDS) + ' AS sp ORDER BY sp.ts, sp.id',
+                'MATCH (sp:Span) WHERE sp.trace_id IN $traces AND sp.parent_id IN $parents '
+                # Tuple membership avoids evaluating two property/map comparisons
+                # for every admitted parent and scanned span on every P3 replay.
+                'AND [sp.trace_id, sp.parent_id] IN $pairs RETURN '
+                + queries.projection('sp', queries.EVIDENCE_FIELDS) + ' AS sp ORDER BY sp.ts, sp.id',
                 {'traces': sorted({r['properties'].get('trace_id', '') for r in parents}),
-                 'parents': sorted({r['properties']['span_id'] for r in parents})}, cap=settings.trace_context)
+                 'parents': sorted({r['properties']['span_id'] for r in parents}),
+                 'pairs': [[tid, span_id] for tid, span_id in sorted({
+                     (r['properties'].get('trace_id', ''), r['properties']['span_id']) for r in parents})]},
+                cap=settings.trace_context)
             for (n,) in context_rows:
                 props, _ = _properties(n, settings)
                 trace_context.append({'id': props['id'], 'type': 'Span', 'properties': props})
             trace_complete &= not context_overflow
         except Exception as exc:
             failures.append('trace_context:' + type(exc).__name__)
+            context_failed = True
             trace_complete = False
     gateway.graph = graph
     transcript = gateway.validate()
@@ -344,6 +397,30 @@ def _scope_investigation(investigation: Investigation, *, full_scope=False,
               'fingerprint': scope_fingerprint(result, settings.fingerprint), 'queries': gateway.diagnostics,
               'omitted_records': len(observations)+len(changes)-len(admitted), 'failures': failures,
               'trace_context_records': len(trace_context), 'trace_query_complete': trace_complete,
+              'completeness': {
+                  'service_query_overflow': service_overflow,
+                  'initial_observation_overflow_buckets': initial_overflow_buckets,
+                  'remaining_observation_overflow_buckets': sum(b['overflow'] for b in observation_buckets),
+                  'unqueried_observation_buckets': sum(b['status'] == 'unqueried' for b in observation_buckets),
+                  'observation_read_failures': observation_read_failures,
+                  'payload_or_read_failures': len(failures),
+                  'raw_observation_rows': raw_retained,
+                  'redistribution_queries': redistribution_queries,
+                  'redistributed_records': redistributed_records,
+                  'change_query_overflow': change_diagnostics.get('overflow', False),
+                  'edge_query_overflow': edge_overflow,
+                  'series_omitted': len(series) - len(allowed),
+                  'series_records_omitted': sum(r['type'] == 'MetricAnomaly' and series_identity(r) not in allowed for r in observations),
+                  'change_records_omitted': len(changes) - sum(per_service.values()),
+                  'node_admission_omitted': len(eligible) - len(admitted),
+                  'context_query_overflow': context_overflow,
+                  'context_query_failed': context_failed,
+                  'context_query_complete': not context_overflow and not context_failed,
+                  # A complete graph read cannot prove unsampled upstream telemetry.
+                  'source_coverage': 'unknown',
+                  'selected_spans_source_complete': sum(r['properties'].get('trace_complete') is True for r in parents),
+                  'selected_spans_source_unknown_or_partial': sum(r['properties'].get('trace_complete') is not True for r in parents),
+              },
               'snapshot_consistency': 'immutable-graph-copy-live-repeat-validation-v1' if read_graph is not graph else 'adapter-repeat-read-nontransactional-v1',
               'property_projection': 'allowlist-json-field-guard-v1',
               'source_publication_version': publication_version}

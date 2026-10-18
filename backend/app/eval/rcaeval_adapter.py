@@ -28,6 +28,7 @@ import pandas as pd
 
 from backend.app.eval import baseline_scale as bscale
 from backend.app.ingest import normalize
+from config import tuning
 
 OB_TOPOLOGY = Path(__file__).resolve().parent.parent / "seed" / "rcaeval_ob_topology.json"
 
@@ -105,11 +106,23 @@ def metric_columns(frame: pd.DataFrame) -> list[tuple[str, str, str]]:
     return columns
 
 
-def series_stats(before: pd.Series, after: pd.Series, after_times: list[int]) -> dict:
-    """Baseline statistics + peak/onset anomaly samples for one metric series.
+def series_stats(before: pd.Series, after: pd.Series, after_times: list[int],
+                 onset_s: int | None = None) -> dict:
+    """Baseline statistics + at most three distinct sample timestamps.
 
-    Emits up to two samples: the peak |z| post-injection row and the first
-    post-injection row (so P1's ±60 s n-sigma rule sees the onset).
+    Preserve the legacy peak and first finite post rows, then add the earliest
+    qualifying deviation within ONSET_DELTA_MS (inclusive) of authoritative
+    `onset_s` (seconds). Omission means no onset selection, not an inferred
+    clock from the first observation. No service/fault labels enter selection.
+
+    `summary` contains bounded scalar descriptive facts, not causal evidence or
+    a persistence verdict. Onset counts cover finite observations in the onset
+    window; runs count consecutive source rows qualifying in the same direction
+    (missing/nonqualifying rows break runs), not elapsed seconds. Direction sets
+    are sorted comma-separated strings (empty means none). Full-post deviation
+    directions include subthreshold reversals relative to the baseline mean.
+    The floor persistence guard remains global, not onset-local: a long global
+    departure may score an isolated onset sample without proving persistence.
 
     Measured-spread baselines (std > 0 for z, IQR > 0 for gamma) are scored
     exactly as before. A baseline with no spread is scored by
@@ -141,8 +154,18 @@ def series_stats(before: pd.Series, after: pd.Series, after_times: list[int]) ->
         "baseline_iqr": (iqr if iqr > 0 else 0.0) if len(base) else None,
         "gamma": gamma, "scale_source": scale.source,
     }
+    summary = {
+        "onset_clock_available": onset_s is not None,
+        "onset_valid_count": 0,
+        "onset_qualified_count": 0,
+        "onset_longest_same_direction_run": 0,
+        "onset_qualified_directions": "",
+        "onset_representative_ts": None,
+        "onset_representative_direction": "",
+        "post_deviation_directions": "",
+    }
     if valid.empty:
-        return {"stats": stats, "samples": []}
+        return {"stats": stats, "samples": [], "summary": summary}
     floor_path = std <= 0
     floor_persistent = floor_path and bscale.persistent(post, scale)
 
@@ -155,22 +178,61 @@ def series_stats(before: pd.Series, after: pd.Series, after_times: list[int]) ->
             return 0.0, False
         return bscale.deviation(value, scale), True
 
-    positions = []
-    peak_position = int(valid.sub(mean).abs().idxmax())
-    positions.append(peak_position)
-    onset = valid.index[0]
-    if onset != peak_position:
-        positions.append(int(onset))
-    samples = []
+    onset_directions, post_directions = set(), set()
+    representative = None
+    run_direction, run_length = None, 0
+    gamma_qualified = gamma is not None and math.isfinite(gamma) and gamma >= tuning.NSIGMA_N
+    for position, value in win.items():
+        # Iterate source rows, not dropna(), so missing observations break runs.
+        if not math.isfinite(value):
+            run_direction, run_length = None, 0
+            continue
+        direction = "up" if value >= mean else "down"
+        if len(base) and value != mean:
+            post_directions.add(direction)
+        ts = int(after_times[position]) * 1000
+        if onset_s is None or abs(ts - onset_s * 1000) > tuning.ONSET_DELTA_MS:
+            run_direction, run_length = None, 0
+            continue
+        summary["onset_valid_count"] += 1
+        z_value, _ = z_of(float(value))
+        qualified = (gamma_qualified and z_value is not None and math.isfinite(z_value)
+                     and abs(z_value) >= tuning.NSIGMA_N
+                     and (z_value > 0 if direction == "up" else z_value < 0))
+        if not qualified:
+            run_direction, run_length = None, 0
+            continue
+        summary["onset_qualified_count"] += 1
+        onset_directions.add(direction)
+        run_length = run_length + 1 if run_direction == direction else 1
+        run_direction = direction
+        summary["onset_longest_same_direction_run"] = max(
+            summary["onset_longest_same_direction_run"], run_length)
+        if representative is None or ts < summary["onset_representative_ts"]:
+            representative = int(position)
+            summary["onset_representative_ts"] = ts
+            summary["onset_representative_direction"] = direction
+    summary["onset_qualified_directions"] = ",".join(sorted(onset_directions))
+    summary["post_deviation_directions"] = ",".join(sorted(post_directions))
+
+    # Keep legacy peak/first priority even when timestamps are duplicated.
+    positions = [int(valid.sub(mean).abs().idxmax()), int(valid.index[0])]
+    if representative is not None:
+        positions.append(representative)
+    samples, seen_times = [], set()
     for position in positions:
+        ts = int(after_times[position]) * 1000
+        if ts in seen_times:
+            continue
+        seen_times.add(ts)
         value = float(win.loc[position])
         z_value, capped = z_of(value)
         samples.append({
-            "ts": int(after_times[position]) * 1000,
+            "ts": ts,
             "value": value, "z": z_value, "z_capped": capped,
             "direction": "up" if value >= mean else "down",
         })
-    return {"stats": stats, "samples": samples}
+    return {"stats": stats, "samples": samples, "summary": summary}
 
 
 SAMPLER_VERSION = "stratified-window-traces-v2"
@@ -251,7 +313,21 @@ def select_trace_sample(traces: pd.DataFrame, t0_ms: int, t1_ms: int,
                    and (str(row.traceID), str(row.parentSpanID)) not in ids)
     selected_bins = sorted({int((t-inject_ms)//60000) for t in included["startTimeMillis"]})
     unmet = [period for period in ("pre", "post") if counts(included)[period] == 0]
-    source_sizes = source.groupby(source["traceID"].astype(str)).size().to_dict()
+    source_sizes = traces.groupby(traces["traceID"].astype(str)).size().to_dict()
+    # Closure is relative to this supplied source, not a claim about upstream
+    # collection. A boundary-sliced, orphaned or conflicting group proves nothing.
+    complete_groups = set()
+    for tid in selected:
+        group = groups[tid]
+        explicit = group.get("trace_complete")
+        if (tid not in ('', 'nan', 'None')
+                and len(group) == source_sizes.get(tid, 0)
+                and not group["spanID"].isna().any()
+                and not group["spanID"].astype(str).duplicated().any()
+                and not parent_losses(group, group)
+                and (explicit is None or explicit.map(lambda v: v is True).all())):
+            complete_groups.add(tid)
+    included["trace_complete"] = included["traceID"].astype(str).isin(complete_groups)
     diagnostics = {
         "sampler_version": SAMPLER_VERSION, "seed": seed, "hard_cap": budget,
         "source_count": len(source), "window_count": len(window), "selected_count": len(included),
@@ -266,10 +342,38 @@ def select_trace_sample(traces: pd.DataFrame, t0_ms: int, t1_ms: int,
         "orphan_parent_count": parent_losses(included, included),
         "boundary_parent_loss": parent_losses(included, window) - parent_losses(included, source),
         "in_window_group_complete": True,
+        "source_sampled": len(included) < len(window),
+        "window_records_omitted": len(window) - len(included),
+        "source_coverage": "supplied-file-only-upstream-unknown",
+        "selected_source_closed_groups": len(complete_groups),
+        "selected_source_unproven_groups": len(selected) - len(complete_groups),
+        "trace_complete_basis": "whole-supplied-source-group-no-orphans-or-duplicate-spans",
         "full_source_trace_complete": all(len(groups[tid]) == source_sizes.get(tid, 0) for tid in selected),
         "unmet_quotas": unmet, "quality_status": "insufficient_period_coverage" if unmet else "ok",
     }
     return included, diagnostics
+
+
+def _normal_log_sample(plain: pd.DataFrame, inject_s: int) -> pd.DataFrame:
+    """Same per-service volume, round-robin periods then minute/template strata."""
+    queues = {False: {}, True: {}}
+    for index, row in plain.sort_values(["ts", "message"], kind="stable").iterrows():
+        post = row["ts"] >= inject_s
+        key = (int((row["ts"] - inject_s) // 60), normalize.template_for(str(row["message"])))
+        queues[post].setdefault(key, []).append(index)
+    # Rotate temporal/template strata instead of retaining a baseline prefix.
+    strata = {period: list(sorted(groups)) for period, groups in queues.items()}
+    selected = []
+    while len(selected) < min(LOG_SAMPLE_PER_SERVICE, len(plain)):
+        for period in (False, True):
+            if not strata[period] or len(selected) >= LOG_SAMPLE_PER_SERVICE:
+                continue
+            key = strata[period].pop(0)
+            queue = queues[period][key]
+            selected.append(queue.pop(len(queue) // 2))
+            if queue:
+                strata[period].append(key)
+    return plain.loc[selected]
 
 
 def _minute_stats(events, t0_s, t1_s, inject_s, latency=False, services=None):
@@ -496,10 +600,10 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
         params={"id": incident_id, "ts": inject_ms},
     )
 
-    # --- metrics -> MetricAnomaly (per series: peak + onset samples) ---
+    # --- metrics -> MetricAnomaly (per series: peak + first + qualifying onset) ---
     metric_rows, metric_edges = [], []
     for column, entity, family in metric_columns(frame):
-        stats = series_stats(before[column], after[column], after_times)
+        stats = series_stats(before[column], after[column], after_times, onset_s=inject_s)
         for sample in stats["samples"]:
             record_id = f"metric:{key}/{column}/{sample['ts']}"
             metric_rows.append({
@@ -512,6 +616,7 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
                 "baseline_iqr": stats["stats"]["baseline_iqr"],
                 "gamma": stats["stats"]["gamma"],
                 "z_capped": bool(sample["z_capped"]),
+                **stats["summary"],
             })
             metric_edges.append({"src": record_id, "dst": f"service:{entity}"})
         counts["metrics"] += len(stats["samples"])
@@ -522,7 +627,7 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
     log_rows, log_edges = [], []
     log_diagnostics = {}
     if case["logs"] is not None and not case["logs"].empty:
-        logs = case["logs"].rename(columns={"timestamp": "ts", "container_name": "service_id"})
+        logs = case["logs"].rename(columns={"timestamp": "ts", "container_name": "service_id"}).reset_index(drop=True)
         logs["service_id"] = logs["service_id"].astype(str)
         logs["is_error"] = logs["message"].astype(str).str.contains(_ERROR_RE)
         logs = logs[(logs["ts"] >= t0_s) & (logs["ts"] <= t1_s)]
@@ -534,7 +639,7 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
             if len(service_errors) > LOG_ERROR_CAP:
                 stride = max(1, len(service_errors) // LOG_ERROR_CAP)
                 service_errors = service_errors.iloc[::stride].head(LOG_ERROR_CAP)
-            plain = group[~group["is_error"]].head(LOG_SAMPLE_PER_SERVICE)
+            plain = _normal_log_sample(group[~group["is_error"]], inject_s)
             for index, row in service_errors.iterrows():
                 record_id = f"log:{key}/{service}/{int(row['ts'])}/{index}"
                 log_rows.append({
@@ -554,6 +659,12 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
                 })
                 log_edges.append({"src": record_id, "dst": f"service:{service}"})
         counts["logs"] = len(log_rows)
+        log_diagnostics.update(
+            sampling="prepost-minute-template-round-robin-v1",
+            window_count=len(logs), selected_count=len(log_rows),
+            normal_records_omitted=int((~logs["is_error"]).sum()) - sum(not r["is_error"] for r in log_rows),
+            error_records_omitted=len(errors) - sum(r["is_error"] for r in log_rows),
+            source_sampled=len(log_rows) < len(logs))
     _write_nodes(graph, "LogEvent", log_rows)
     _write_edges(graph, "OBSERVED_ON", log_edges, "LogEvent", "Service")
 
@@ -575,6 +686,10 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
             record_id = f"span:{key}/{row['spanID']}"
             span_rows.append({
                 "id": record_id, "ts": int(row["startTimeMillis"]),
+                # RCAEval startTime is epoch microseconds; never reconstruct it
+                # from rounded milliseconds when source precision is available.
+                "start_us": int(row["startTime"]) if pd.notna(row.get("startTime")) else int(row["startTimeMillis"] * 1000),
+                "trace_complete": bool(row["trace_complete"]),
                 "duration_us": int(row["duration"]) if pd.notna(row["duration"]) else 0,
                 "trace_id": str(row["traceID"]), "span_id": str(row["spanID"]),
                 "parent_id": str(parent) if pd.notna(parent) else "",
@@ -591,6 +706,7 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
 
     return {
         "incident_id": incident_id,
+        "onset_ts": inject_ms,
         "t0_ms": slices["t0_ms"],
         "t1_ms": slices["t1_ms"],
         "entities": sorted(entities),
