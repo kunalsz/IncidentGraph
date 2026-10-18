@@ -1,4 +1,5 @@
 """Adversarial v2 contract/report and bounded finalization regressions."""
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -210,12 +211,26 @@ def test_nested_compatibility_metadata_is_bounded_finite_and_extra_forbidden():
             type(INV).model_validate(data)
 
 
+def _pinned_historical(relative: str) -> bytes:
+    """Bytes of a pinned historical v1 artifact, or a visible skip.
+
+    `historical_v1_gate` accepts only the two SHA256 digests pinned in
+    contracts.py, so these artifacts cannot be synthesized or regenerated: the
+    original run directories (`output/`, `audit/`) are gitignored and the run
+    that produced them is gone. These regressions therefore run only where a
+    surviving copy is present, and are reported as skips otherwise rather than
+    silently deleted or faked.
+    """
+    path = Path(__file__).resolve().parents[2] / relative
+    if not path.is_file():
+        pytest.skip(f"pinned historical artifact absent (lost run, not regenerable): {path}")
+    return path.read_bytes()
+
+
 def test_real_historical_view_and_migration_cannot_trust_legacy_results():
-    from pathlib import Path
     from backend.app.engine.contracts import historical_v1_gate
-    root = Path(__file__).resolve().parents[2]
     for directory in ["rcaeval-agent-20", "rcaeval-20-baseline"]:
-        raw = (root / "output" / directory / "_summary.json").read_bytes()
+        raw = _pinned_historical(f"output/{directory}/_summary.json")
         viewed = historical_v1_gate(raw, mode="VIEW")
         assert viewed["historical"]["n_cases"] == 20
         assert not viewed["authoritative"] and not viewed["diagnosis_eligible"]
@@ -223,15 +238,19 @@ def test_real_historical_view_and_migration_cannot_trust_legacy_results():
             historical_v1_gate(raw, mode="MIGRATION")
         with pytest.raises(ValueError, match="pinned historical"):
             historical_v1_gate(raw + b" ", mode="VIEW")
-    with pytest.raises(ValueError):
+
+
+def test_unpinned_historical_v1_bytes_are_rejected():
+    # Independent of the lost artifacts: only pinned digests are ever accepted.
+    from backend.app.engine.contracts import historical_v1_gate
+    with pytest.raises(ValueError, match="pinned historical"):
         historical_v1_gate(b'{"schema_version":1,"verdict":"pass"}')
 
 
 def test_historical_migration_performs_fresh_checks_not_old_winner(monkeypatch):
-    from pathlib import Path
     from backend.app.engine.contracts import historical_v1_gate
     from backend.app.engine import p4_validate
-    raw = (Path(__file__).resolve().parents[2] / "output/rcaeval-agent-20/_summary.json").read_bytes()
+    raw = _pinned_historical("output/rcaeval-agent-20/_summary.json")
     scope = scope_for("service:s0")
     inv = INV.model_copy(update={"onset_ts": 1})
     ranking = _ranking([1]).model_copy(update={"scope_ref": scope.scope_ref})
