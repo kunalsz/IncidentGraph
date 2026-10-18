@@ -162,7 +162,9 @@ def test_main_freeze_then_control_and_shadow_forwarding_no_paid_calls(tmp_path, 
     for k, v in {"LLM_PROVIDER": "openai", "LLM_MODEL": "exact", "LLM_BASE_URL": "https://example.invalid/v1",
                  "LLM_API_KEY": "DO-NOT-EXPOSE"}.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setattr(g, "freeze", lambda model, base, old: {"old_run": str(tmp_path / "old"), "freeze_sha256": "frozen"})
+    monkeypatch.setattr(g, "freeze", lambda model, base, old, cases=None:
+                        {"old_run": str(tmp_path / "old"), "cases": list(cases or g.CASES),
+                         "freeze_sha256": "frozen"})
     monkeypatch.setattr(g.OpenAICompatibleProvider, "complete", lambda *a, **k: pytest.fail("no provider calls permitted"))
     calls = []
     def run_case(path, out, **kwargs):

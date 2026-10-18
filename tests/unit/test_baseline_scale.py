@@ -127,8 +127,10 @@ class TestMeasuredPathsUnchanged:
         assert qualifies({"z": peak["z"], "gamma": out["stats"]["gamma"]})
 
     def test_old_sentinel_pair_was_rejected_by_gate(self):
-        # documents the defect this change fixes
-        assert not qualifies({"z": adapter.Z_CAP, "gamma": 0.0})
+        # Documents the retired defect: the flat 6.0 metric sentinel with
+        # gamma 0.0 could never qualify. The log/trace sentinel of the same
+        # name was separately removed in favour of the shared scale policy.
+        assert not qualifies({"z": 6.0, "gamma": 0.0})
 
 
 TOPOLOGY = json.loads(adapter.OB_TOPOLOGY.read_text())

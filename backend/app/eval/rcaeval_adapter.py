@@ -33,7 +33,11 @@ from config import tuning
 OB_TOPOLOGY = Path(__file__).resolve().parent.parent / "seed" / "rcaeval_ob_topology.json"
 
 WINDOW_HALF_S = 600          # RCAEval --length 20 -> 600 samples each side (1 Hz)
-Z_CAP = 6.0                  # per-minute log/trace count z when the baseline has no variance
+# Per-minute log/trace series with no observed spread get a scale floor of one
+# count divided by the band width, so the unremarkable band is one count (an
+# isolated extra log line is not an anomaly) while a persistent multi-count
+# burst is. Latency series scale from 5% of their own level instead.
+COUNT_FLOOR = 1.0 / 3.0
 LEVEL_CONVENTION = "dependency_depth_v1"  # what policy._service_levels accepts as authoritative
 SPAN_BUDGET = 6_000          # total spans written per case (deterministic selection)
 ERROR_SPAN_BUDGET = 3_000    # of which reserved for traces carrying error spans
@@ -376,6 +380,29 @@ def _normal_log_sample(plain: pd.DataFrame, inject_s: int) -> pd.DataFrame:
     return plain.loc[selected]
 
 
+def _minute_score(pre: list[float], post: list[float], *,
+                  absolute_floor: float) -> dict:
+    """z for one per-minute series under the shared baseline-scale policy.
+
+    Measured spread scores a plain z (no sentinel cap: log/trace severity must
+    be comparable with metric severity, which is unbounded). A baseline with no
+    observed spread scores from the floor scale and only when the departure
+    persists across minutes, so one quiet extra observation is not an anomaly.
+    """
+    mean = sum(pre) / len(pre)
+    std = math.sqrt(sum((v - mean) ** 2 for v in pre) / (len(pre) - 1))
+    peak = max(post)
+    if std > 0:
+        raw = (peak - mean) / std
+        return {"z": max(-bscale.SCALE_Z_CEILING, min(bscale.SCALE_Z_CEILING, raw)),
+                "source": "measured", "persistent": True, "floor_scale": None}
+    scale = bscale.baseline_scale(pre, abs_floor=absolute_floor)
+    persistent = bscale.persistent(post, scale)
+    z = bscale.deviation(peak, scale) if persistent else 0.0
+    return {"z": z, "source": scale.source, "persistent": persistent,
+            "floor_scale": scale.scale}
+
+
 def _minute_stats(events, t0_s, t1_s, inject_s, latency=False, services=None):
     # Observed interval is inclusive at second resolution. Exclude partial
     # bins; grids are aligned to injection (never to the first event).
@@ -402,9 +429,13 @@ def _minute_stats(events, t0_s, t1_s, inject_s, latency=False, services=None):
         else:
             mean = sum(pre) / len(pre)
             std = math.sqrt(sum((v-mean)**2 for v in pre)/(len(pre)-1))
-            peak = max(post)
-            scores[service] = min((peak-mean)/std, Z_CAP) if std else (Z_CAP if peak > mean else 0.0)
-            info.update(baseline_mean=mean, baseline_std=std, peak_post=peak, z=scores[service])
+            scored = _minute_score(pre, post, absolute_floor=COUNT_FLOOR if not latency
+                                   else bscale.ABS_FLOOR)
+            scores[service] = scored["z"]
+            info.update(baseline_mean=mean, baseline_std=std, peak_post=max(post),
+                        z=scores[service], score_source=scored["source"],
+                        score_persistent=scored["persistent"],
+                        floor_scale=scored["floor_scale"])
         diagnostics["services"][service] = info
     return scores, diagnostics
 

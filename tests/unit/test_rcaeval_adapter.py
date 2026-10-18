@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from backend.app.eval import baseline_scale as bscale  # noqa: E402
 from backend.app.eval import rcaeval_adapter as adapter  # noqa: E402
 from backend.app.eval import rcaeval_runner as runner  # noqa: E402
 from fetch_rcaeval import parse_case, select_subset  # noqa: E402
@@ -117,14 +118,24 @@ class TestSeriesStats:
 
 
 class TestMinuteZ:
-    def test_post_activity_vs_zero_baseline_caps(self):
+    def test_post_activity_vs_zero_baseline(self):
         events = pd.DataFrame({"ts": [10, 700], "service_id": ["a", "a"]})
         # Complete grids include nine zero baseline bins.
         z = adapter.minute_z(events, 0, 1199, 600)
         assert z["a"] == pytest.approx(2.8460498941515415)
-        # no pre events at all, post activity -> capped
+        # No pre events, one post minute: a single quiet observation against an
+        # unmeasured baseline is not an anomaly (was the flat Z_CAP sentinel).
         events2 = pd.DataFrame({"ts": [700], "service_id": ["a"]})
-        assert adapter.minute_z(events2, 0, 1199, 600)["a"] == adapter.Z_CAP
+        scores, diag = adapter.minute_z(events2, 0, 1199, 600, return_diagnostics=True)
+        assert scores["a"] == 0.0
+        assert diag["services"]["a"]["score_source"] == "floor"
+        assert diag["services"]["a"]["score_persistent"] is False
+        # The same baseline with a persistent multi-count burst scores at the
+        # floor ceiling: decisive, but below a large measured deviation.
+        events3 = pd.DataFrame({"ts": [700, 701, 702, 703, 760, 761, 762, 763,
+                                       820, 821, 822, 823], "service_id": ["a"] * 12})
+        assert adapter.minute_z(events3, 0, 1199, 600)["a"] == pytest.approx(
+            bscale.FLOOR_Z_CEILING)
 
 
 class TestRunnerHelpers:
