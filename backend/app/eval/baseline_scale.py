@@ -13,6 +13,13 @@ The adapter previously handled this with two *inconsistent* sentinels:
   gamma is present, so the same record was simultaneously "z=6" and "not an
   anomaly", and could never become qualified local evidence.
 
+The per-minute log/trace series used a third sentinel of the same shape (a flat
+6.0, and `min(z, 6.0)` even when the baseline HAD measured spread). It is gone:
+`rcaeval_adapter._minute_stats` now scores through this same policy, so log and
+trace severity are comparable with metric severity instead of saturating below
+it. Count series pass a unit-count `abs_floor` because a zero count level
+carries no relative magnitude to scale from.
+
 Policy (pure python, no pandas, so it is unit-testable anywhere)
 ----------------------------------------------------------------
 1. Choose a positive scale from a ladder, first that is > 0:
@@ -78,11 +85,17 @@ def _finite(values: Sequence[float]) -> list[float]:
     return [float(v) for v in values if v is not None and math.isfinite(float(v))]
 
 
-def baseline_scale(baseline: Sequence[float]) -> BaselineScale:
-    """Pick the scale for one series' pre-injection samples."""
+def baseline_scale(baseline: Sequence[float],
+                   abs_floor: float = ABS_FLOOR) -> BaselineScale:
+    """Pick the scale for one series' pre-injection samples.
+
+    `abs_floor` is the degenerate-baseline last resort; count series pass one
+    count (divided by the band width) because a zero count level carries no
+    relative magnitude to scale from.
+    """
     values = sorted(_finite(baseline))
     if not values:
-        return BaselineScale(0.0, ABS_FLOOR, "unavailable", False)
+        return BaselineScale(0.0, abs_floor, "unavailable", False)
     med = _quantile(values, 0.5)
     iqr = _quantile(values, 0.75) - _quantile(values, 0.25)
     if iqr > 0:
@@ -92,7 +105,7 @@ def baseline_scale(baseline: Sequence[float]) -> BaselineScale:
         std = math.sqrt(sum((v - mean) ** 2 for v in values) / (len(values) - 1))
         if std > 0:
             return BaselineScale(med, std, "std", True)
-    return BaselineScale(med, max(REL_FLOOR * abs(med), ABS_FLOOR), "floor", False)
+    return BaselineScale(med, max(REL_FLOOR * abs(med), abs_floor), "floor", False)
 
 
 def ceiling(scale: BaselineScale) -> float:

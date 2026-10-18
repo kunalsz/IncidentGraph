@@ -37,7 +37,7 @@ SELF_TIME_THRESHOLD_MS = 500      # parent - Σchildren > 500ms => network suspi
 # ---------------------------------------------------------------------------
 
 P2_RANK_POLICY = "baseline_rrf"  # severity_only is an explicit opt-in, never automatic
-P2_RANK_POLICIES = ("baseline_rrf", "severity_only")
+P2_RANK_POLICIES = ("baseline_rrf", "severity_only", "rrf_anchor_neutral")
 P2_RANK_POLICY_VERSION = "p2-rank-v1"
 RRF_EPSILON = 60                  # RRF constant
 RWR_PHI = 0.15                    # restart probability for personalized PageRank

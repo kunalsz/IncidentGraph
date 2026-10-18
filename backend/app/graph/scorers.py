@@ -63,6 +63,39 @@ def random_walk(service_ids, edges, anchor, restart=None, iterations=None):
     return mass
 
 
+def neutral_walk(service_ids, edges, restart=None, iterations=None):
+    """Uniform-restart walk: topology mass with no anchor preference.
+
+    For cold ranking, where the anchor is not case-derived. A real incident's
+    anchor stays the right prior (`random_walk`); this variant exists because a
+    hardcoded benchmark anchor turns one of four voting components into a
+    constant vote for that anchor. Dead ends keep their own mass instead of
+    leaking it to an anchor that does not exist here.
+    """
+    restart = tuning.RWR_PHI if restart is None else restart
+    iterations = tuning.RWR_ITERATIONS if iterations is None else iterations
+    if not 0 < restart <= 1 or iterations < 1:
+        raise ValueError("invalid random-walk parameters")
+    if not service_ids:
+        return {}
+    adjacency = {sid: set() for sid in service_ids}
+    for edge in edges:
+        if edge["type"] == "DEPENDS_ON":
+            adjacency[edge["source"]].add(edge["target"])
+    share = restart / len(service_ids)
+    # Start from the uniform distribution, the neutral analogue of starting at
+    # the anchor; the anchored walk begins at total mass 1 and stays there.
+    mass = {sid: 1.0 / len(service_ids) for sid in service_ids}
+    for _ in range(iterations):
+        updated = {sid: share for sid in service_ids}
+        for sid, value in mass.items():
+            neighbors = adjacency[sid] or {sid}
+            for neighbor in neighbors:
+                updated[neighbor] += (1 - restart) * value / len(neighbors)
+        mass = updated
+    return mass
+
+
 def reciprocal_rank_fusion(components, epsilon=None):
     epsilon = tuning.RRF_EPSILON if epsilon is None else epsilon
     if epsilon <= 0:

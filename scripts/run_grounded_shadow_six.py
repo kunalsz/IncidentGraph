@@ -37,6 +37,18 @@ CONFOUNDING = ("Historical comparison only, confounded by changed scope, prompt 
                "(and expansion allocation); not a causal ablation or independent holdout.")
 
 
+def read_cases(path):
+    from backend.app.eval.rcaeval_runner import parse_case_name
+    names = [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
+    if not names or len(names) != len(set(names)):
+        raise ValueError("case list must be nonempty and unique")
+    for name in names:
+        parse_case_name(name)
+        if not (ROOT / "data/RE2-OB" / name).is_dir():
+            raise ValueError(f"case not available locally: {name}")
+    return names
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
@@ -59,7 +71,7 @@ def historical_freeze(old_run):
     return {str(p.resolve()): rr.sha256(p) if p.is_file() else None for p in paths}
 
 
-def freeze(model, base, old_run):
+def freeze(model, base, old_run, cases=None):
     url = urlsplit(base)
     if (url.scheme not in ("http", "https") or not url.hostname or url.username
             or url.password or url.query or url.fragment):
@@ -68,7 +80,7 @@ def freeze(model, base, old_run):
     prov["budget"] = BUDGET.as_dict()  # never retain the default budget as effective
     schemas = {name: schema.model_json_schema() for name, schema in TASK_SCHEMAS.items()}
     schemas["individual_proposal"] = Proposal.model_json_schema()
-    result = {"protocol": "grounded-shadow-six-v1", "cases": CASES,
+    result = {"protocol": "grounded-shadow-six-v1", "cases": list(cases or CASES),
         "exploratory_not_independent_holdout": True, "provider": "openai-compatible",
         "endpoint_origin": f"{url.scheme}://{url.hostname}" + (f":{url.port}" if url.port else ""),
         "endpoint_sha256": hashlib.sha256(base.encode()).hexdigest(),
@@ -243,6 +255,8 @@ def main(argv=None):
     mode.add_argument("--freeze-only", action="store_true")
     mode.add_argument("--frozen-protocol", type=Path)
     parser.add_argument("--old-run", type=Path, default=OLD_RUN)
+    parser.add_argument("--cases-file", type=Path,
+                        help="text file, one case name per line (freeze-only); stored in the protocol")
     args = parser.parse_args(argv)
     from backend.app.envfile import load_env_file
     load_env_file(str(ROOT / ".env"))
@@ -256,14 +270,18 @@ def main(argv=None):
     if args.freeze_only:
         out = ROOT / "output" / ("grounded-shadow-six-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
         out.mkdir(parents=True, exist_ok=False)
-        protocol = freeze(model, base, args.old_run)
+        cases = (read_cases(args.cases_file) if args.cases_file else None)
+        protocol = freeze(model, base, args.old_run, cases)
         # Protocol consists solely of curated fields/hashes, not environment values.
         rr.atomic_json(out / "protocol.json", protocol)
         print("FROZEN", out / "protocol.json", "SHA256", protocol["freeze_sha256"], flush=True)
         return 0
     protocol = json.loads(args.frozen_protocol.read_text())
     old_run = Path(protocol["old_run"])
-    if freeze(model, base, old_run) != protocol:
+    cases = protocol["cases"]
+    if cases != list(CASES) and not all((ROOT / "data/RE2-OB" / c).is_dir() for c in cases):
+        raise ValueError("frozen case list is not available under data/RE2-OB")
+    if freeze(model, base, old_run, cases) != protocol:
         raise ValueError("source/input/config/provider freeze mismatch; create a new freeze")
     out = args.frozen_protocol.resolve().parent
     # Atomic exclusive marker prevents concurrent or repeated expenditure.
@@ -278,11 +296,11 @@ def main(argv=None):
     failure = None
     save(out / "provider-receipts.json", receipts)
     try:
-        for case in CASES:
+        for case in cases:
             if stop.is_set():
                 break
             # Verify before each case, not merely once at launch.
-            if freeze(model, base, old_run) != protocol:
+            if freeze(model, base, old_run, cases) != protocol:
                 raise ValueError("freeze changed during execution")
             active_case[0] = case
             print("START", case, flush=True)
@@ -318,11 +336,11 @@ def main(argv=None):
         failure = type(exc).__name__  # no exception messages/provider bodies/secrets
     finally:
         try:
-            stable = freeze(model, base, old_run) == protocol
+            stable = freeze(model, base, old_run, cases) == protocol
         except Exception:
             stable = False
-        save(out / "summary.json", {"requested_cases": CASES, "completed_cases": rows,
-            "unexecuted_cases": CASES[len(rows):], "stop_flag": stop.is_set(), "failure_type": failure,
+        save(out / "summary.json", {"requested_cases": cases, "completed_cases": rows,
+            "unexecuted_cases": cases[len(rows):], "stop_flag": stop.is_set(), "failure_type": failure,
             "source_input_config_stable": stable, "provider_attempts": len(receipts),
             "known_input_tokens": sum(r.get("tokens_in") or 0 for r in receipts),
             "known_output_tokens": sum(r.get("tokens_out") or 0 for r in receipts),
