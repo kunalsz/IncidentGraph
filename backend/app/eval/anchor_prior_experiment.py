@@ -37,13 +37,24 @@ from backend.app.eval import evaluator as ev
 from backend.app.eval import p2_ablation as base
 from backend.app.graph.scorers import neutral_walk
 from backend.app.eval.rcaeval_runner import atomic_json, sha256
+from backend.app.graph.scorers import random_walk
 from config import tuning
 
-VERSION = "anchor-prior-v1"
+VERSION = "anchor-prior-v2"
 
 # Declared before evaluation. References first, then the three repair
 # candidates in the order the selection rule prefers them.
 CANDIDATES: dict[str, dict] = {
+    "R0_anchored_entry_rwr": {
+        "kind": "reference_reconstruction",
+        "definition": "the prior that shipped before this repair: the personalised walk "
+                      "restarting at the corpus entry service",
+        "implementation": "recomputed offline from the stored scope edges, anchor and "
+                          "tuning constants, because a substrate generated under the "
+                          "anchor-neutral default stores neutral masses and cannot be "
+                          "replayed back to the anchored prior",
+        "declared": "v2 addition: a REFERENCE, not a new arm - the substrate omitted the "
+                    "historical baseline, and a comparison needs its reference point"},
     "baseline_rrf": {"kind": "reference", "rwr": "unchanged",
                      "definition": "the shipped five-component fusion, replayed"},
     "severity_only": {"kind": "reference", "rwr": "unchanged",
@@ -73,6 +84,9 @@ SELECTION_RULE = (
     "answered it. No candidate may be added or reweighted after results are read."
 )
 
+# Default substrate: the original 50/40 replacement split. `--archive` accepts
+# any directory of case records, so the same predeclared candidates can be
+# evaluated on a regenerated substrate or on a second corpus.
 ARCHIVE = {"discovery": ROOT / "output/p2-rebuilt-20261018/discovery-records",
            "holdout": ROOT / "output/p2-rebuilt-20261018/holdout-records"}
 
@@ -96,6 +110,15 @@ def transform(record, name):
         ids = [n["id"] for n in scope.get("nodes", []) if n.get("type") == "Service"]
         # Production definition, imported rather than duplicated.
         mass = neutral_walk(ids, scope.get("edges", []))
+        return ({sid: {**values, "rwr": mass.get(sid, 0.0)} for sid, values in components.items()},
+                weights)
+    if name == "R0_anchored_entry_rwr":
+        scope = (record.get("artifacts") or {}).get("scope") or {}
+        ids = [n["id"] for n in scope.get("nodes", []) if n.get("type") == "Service"]
+        anchor = scope.get("anchor_service") or base.anchor_of(record)
+        if anchor not in ids:
+            raise ValueError(f"anchored reference needs the anchor in scope: {anchor}")
+        mass = random_walk(ids, scope.get("edges", []), anchor)  # production definition
         return ({sid: {**values, "rwr": mass.get(sid, 0.0)} for sid, values in components.items()},
                 weights)
     if name == "baseline_rrf":
@@ -212,20 +235,23 @@ def render(report: dict) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--archive", type=Path, action="append",
+                        help="record directory to evaluate (repeatable); defaults to the frozen 50/40 split")
     parser.add_argument("--output", type=Path,
                         default=ROOT / "output" / ("anchor-prior-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=False)
     sources = ["backend/app/eval/anchor_prior_experiment.py", "backend/app/eval/p2_ablation.py",
                "backend/app/graph/scorers.py", "backend/app/engine/p2_rank.py", "config/tuning.py"]
+    archives = args.archive or list(ARCHIVE.values())
     protocol = {"version": VERSION, "candidates": CANDIDATES, "selection_rule": SELECTION_RULE,
-                "archive": {k: str(v.relative_to(ROOT)) for k, v in ARCHIVE.items()},
+                "archive": [str(path) for path in archives],
                 "evaluation_scope": "all 90 archived cases from both partitions; exploratory, not a holdout",
                 "frozen_p2_ablation_arms": False,
                 "source_sha256": {path: sha256(ROOT / path) for path in sources},
                 "reused_scoring": "p2_ablation.fuse/deployed_order/service_names, evaluator, mcnemar_exact"}
     atomic_json(args.output / "protocol.json", protocol)  # predeclaration, before any number
-    records = base.load_records(ARCHIVE["discovery"]) + base.load_records(ARCHIVE["holdout"])
+    records = [record for path in archives for record in base.load_records(path)]
     report = run(records)
     report["protocol_sha256"] = sha256(args.output / "protocol.json")
     atomic_json(args.output / "results.json", report)

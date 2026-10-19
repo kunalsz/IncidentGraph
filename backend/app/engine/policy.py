@@ -75,10 +75,42 @@ def finite_number(value):
             and math.isfinite(value))
 
 
+# Failure codes in BOTH status spaces this system reads. OTEL uses
+# 0=UNSET, 1=OK, 2=ERROR; gRPC uses 0=OK, 1=CANCELLED, 2..16 = failure codes
+# (2 UNKNOWN, 4 DEADLINE_EXCEEDED, 13 INTERNAL, 14 UNAVAILABLE, ...). On OTEL
+# data only 0/1/2 occur, so a 2..16 rule coincides with OTEL semantics there;
+# on gRPC data it counts the codes that actually mean failure. The RE2 traces
+# are gRPC-coded: reading them with an OTEL-only rule hid 6,481 failing spans
+# in 19 of 90 cases, including 122 same-trace caller/callee failure pairs.
+GRPC_FAILURE_CODES = frozenset(range(2, 17))
+
+
 def error_status(value):
-    """OTel ERROR=2 and common normalized error strings; UNSET/OK are not errors."""
-    return (not isinstance(value, bool) and value == 2) or (
-        isinstance(value, str) and value.lower() in {"error", "failed", "failure", "2"})
+    """Did this status value report a failure? Codes 2..16, or a named failure.
+
+    0/UNSET/OK and 1/OK/CANCELLED are not failures: 1 is OK in OTEL and an
+    ambiguous client-side cancellation in gRPC. Unparseable values are not
+    failures either - they are missing data, which this system reports as a gap
+    rather than as evidence.
+    """
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        key = value.strip().lower()
+        if key in {"error", "failed", "failure"}:
+            return True
+        value = key
+    # Duck-typed on purpose: values arrive as Python ints, as strings from
+    # stored properties, and as numpy scalars straight out of a DataFrame.
+    # isinstance(x, int) is False for numpy integers, which silently marked
+    # every status as healthy.
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(number):
+        return False
+    return int(number) in GRPC_FAILURE_CODES
 
 
 def modality(kind, props):

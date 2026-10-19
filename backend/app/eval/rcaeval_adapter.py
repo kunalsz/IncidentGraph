@@ -26,11 +26,18 @@ from pathlib import Path
 
 import pandas as pd
 
+from backend.app.engine import policy
 from backend.app.eval import baseline_scale as bscale
 from backend.app.ingest import normalize
 from config import tuning
 
-OB_TOPOLOGY = Path(__file__).resolve().parent.parent / "seed" / "rcaeval_ob_topology.json"
+SEED_DIR = Path(__file__).resolve().parent.parent / "seed"
+OB_TOPOLOGY = SEED_DIR / "rcaeval_ob_topology.json"
+# One authored topology per corpus. The benchmark's OB graph is hand-authored;
+# SockShop's is derived from its own trace parent/child pairs (see the file's
+# provenance block). Unknown suites raise rather than silently inventing edges,
+# because the walk prior and the level veto both read this file.
+SUITE_TOPOLOGY = {"re2ob_": OB_TOPOLOGY, "re2ss_": SEED_DIR / "rcaeval_ss_topology.json"}
 
 WINDOW_HALF_S = 600          # RCAEval --length 20 -> 600 samples each side (1 Hz)
 # Per-minute log/trace series with no observed spread get a scale floor of one
@@ -263,8 +270,9 @@ def select_trace_sample(traces: pd.DataFrame, t0_ms: int, t1_ms: int,
     window["service_id"] = window["serviceName"].astype(str).map(lambda x: TRACE_SERVICE_MAP.get(x, x))
     window["ts"] = (window["startTimeMillis"] // 1000).astype("int64")
     window["duration_us"] = window["duration"]
-    # OpenTelemetry UNSET=0, OK=1, ERROR=2; OK is not an error.
-    window["error"] = window["statusCode"].map(lambda value: str(value).lower() in ("2", "2.0", "error", "failed", "failure"))
+    # Single shared rule (policy.error_status): these traces carry gRPC codes,
+    # so an OTEL-only "statusCode == 2" test read INTERNAL/UNAVAILABLE as success.
+    window["error"] = window["statusCode"].map(policy.error_status)
     groups = {str(tid): group for tid, group in window.groupby("traceID", sort=True)}
     def priority(tid):
         group = groups[tid]
@@ -572,9 +580,21 @@ def _write_edges(graph, rel: str, pairs: list[dict], src_label: str, dst_label: 
 # Case loading
 # ---------------------------------------------------------------------------
 
-def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
+def topology_for(case_name: str) -> Path:
+    """Authored topology for a case's suite; explicit error when unknown."""
+    from backend.app.eval.rcaeval_runner import suite_of
+    prefix = suite_of(case_name)
+    path = SUITE_TOPOLOGY.get(prefix)
+    if path is None:
+        raise ValueError(f"no authored topology registered for suite {prefix!r}")
+    if not path.is_file():
+        raise FileNotFoundError(f"topology for {prefix!r} missing: {path}")
+    return path
+
+
+def load_case(graph, case_dir: Path, topology_path: Path | None = None,
               length_min: int = 20) -> dict:
-    """Write one RE2-OB case into `graph`; return window + telemetry facts.
+    """Write one RE2 case into `graph`; return window + telemetry facts.
 
     Returns {"incident_id", "t0_ms", "t1_ms", "entities", "window_frame",
     "counts"} — the runner builds the Investigation from this and uses the
@@ -582,6 +602,7 @@ def load_case(graph, case_dir: Path, topology_path: Path = OB_TOPOLOGY,
     """
     case_dir = Path(case_dir)
     key = run_key(case_dir)
+    topology_path = Path(topology_path) if topology_path else topology_for(case_dir.name)
     case = read_case(case_dir)
     inject_s = case["inject_s"]
     inject_ms = inject_s * 1000

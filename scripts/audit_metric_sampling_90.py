@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
+import argparse
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from backend.app.agent import bundle as bundle_mod
@@ -59,20 +61,28 @@ def equal_stats(a, b):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", type=Path, default=DATA)
+    parser.add_argument("--out", type=Path, default=OUT)
+    args = parser.parse_args()
+    data, out = args.data, args.out
     started = time.monotonic()
     source = frozen_source()
-    cases = sorted(p.name for p in DATA.iterdir() if p.is_dir() and p.name.startswith("re2ob_"))
-    assert len(cases) == 90, len(cases)
+    cases = sorted(p.name for p in data.iterdir()
+                   if p.is_dir() and p.name.startswith(data.name.replace("RE2-", "re2").lower() + "_")
+                   or p.is_dir() and p.name.startswith(("re2ob_", "re2ss_", "re2tt_")))
+    assert cases, f"no case directories under {data}"
     report = {"label": "offline controlled counterfactual; metrics.parquet only; no DB/model",
               "cases": len(cases), "source_sha256": hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest(),
               "onset_delta_ms": tuning.ONSET_DELTA_MS, "nsigma": tuning.NSIGMA_N,
+              "corpus": data.name,
               "per_case": [], "added_samples": 0, "legacy_samples": 0, "new_samples": 0,
               "series": 0, "series_with_added_sample": 0, "series_newly_timely_qualifying": 0,
               "severity_changed_services": 0, "option_services": {"legacy": 0, "new": 0},
               "truth_timely_option": {"legacy": 0, "new": 0}, "truth_service_present": 0,
               "truth_rank_unchanged": 0}
     for case in cases:
-        case_dir = DATA / case
+        case_dir = data / case
         truth = case[len("re2ob_"):].rsplit("_", 2)[0]
         inject_s = int((case_dir / "inject_time.txt").read_text().strip())
         metrics = pd.read_parquet(case_dir / "metrics.parquet")
@@ -162,8 +172,8 @@ def main():
             "truth_options_new": truth_options.get(truth, {}).get("new")})
         print(case, "added", case_added, "timely", timely_series, flush=True)
     report["runtime_s"] = round(time.monotonic() - started, 1)
-    OUT.mkdir(parents=True, exist_ok=True)
-    atomic_json(OUT / "sampling-90-summary.json", report)
+    out.mkdir(parents=True, exist_ok=True)
+    atomic_json(out / "sampling-90-summary.json", report)
     improved = sum(1 for row in report["per_case"] if row["option_services_new"] > row["option_services_legacy"])
     unchanged = sum(1 for row in report["per_case"] if row["option_services_new"] == row["option_services_legacy"])
     decreased = sum(1 for row in report["per_case"] if row["option_services_new"] < row["option_services_legacy"])
@@ -171,7 +181,7 @@ def main():
         f"| {row['case']} | {row['series']} | {row['added_samples']} | {row['newly_timely_series']} | "
         f"{row['option_services_legacy']} → {row['option_services_new']} | "
         f"{row['truth_options_legacy']} → {row['truth_options_new']} |" for row in report["per_case"])
-    (OUT / "RESULTS.md").write_text(f"""# Onset-aware metric sampling: offline 90-case diagnostic
+    (out / "RESULTS.md").write_text(f"""# Onset-aware metric sampling: offline 90-case diagnostic
 
 Controlled counterfactual over `metrics.parquet` only: no database, model, or network. Legacy sampling vs the new onset sampler, using the identical baseline/z/gamma policy and qualification gates. Ground truth is read from the case name only after selection, to report option availability; it never influenced sampling.
 

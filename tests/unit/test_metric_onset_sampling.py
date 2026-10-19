@@ -199,7 +199,9 @@ def test_load_case_uses_injection_clock_and_propagates_scalar_summary(monkeypatc
                 self.metric_rows.extend(params["rows"])
 
     graph = Graph()
-    result = adapter.load_case(graph, tmp_path / "opaque")
+    # Anonymous synthetic case: state the topology instead of relying on the
+    # per-suite inference the runner uses for real case directories.
+    result = adapter.load_case(graph, tmp_path / "opaque", topology_path=adapter.OB_TOPOLOGY)
     assert clocks == [ONSET]
     assert result["counts"]["metrics"] == len(graph.metric_rows) == 3
     expected = series([0, 4, 9], times=[1005, 1012, 1410])["summary"]

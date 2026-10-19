@@ -15,6 +15,7 @@ import re
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from backend.app.engine.budget import BudgetMeter
@@ -27,9 +28,69 @@ from backend.app.eval import rcaeval_adapter as adapter
 from backend.app.graph.client import client, graph_for
 from config.tuning import InvestigationBudget
 
-CASE_PREFIX = "re2ob_"
+# Corpora share one layout: <suite>_<service>_<fault>_<instance>. Adding a
+# suite must not require touching the engine, which is why the prefix is a
+# tuple and topology selection is by prefix (see the adapter).
+SUITE_PREFIXES = ("re2ob_", "re2ss_", "re2tt_")
+CASE_PREFIX = SUITE_PREFIXES[0]  # retained for older callers
+# Corpus entry services differ by name but play the same role. This is only a
+# placeholder for cold ranking: it must exist in scope (the anchored walk
+# requires it, and P4 compares levels against it) and it must be the same node a
+# real incident's symptom would be reported against, so the anchored-prior
+# comparison stays comparable across corpora.
+ENTRY_SERVICE_NAMES = ("frontend", "front-end", "frontendservice")
+DEFAULT_ANCHOR = "service:frontend"  # OB's entry service
+
+# RCAEval supplies no symptom, so this harness fixes the anchor to an entry
+# service and ranks every service cold. Which prior to use there is decided by
+# two corpora, not one:
+#   Online Boutique (90): anchored entry-service prior 24.4% AC@1, anchor-neutral
+#     walk 57.8%, drop the walk 51.1%, severity only 78.9%
+#   SockShop (60): anchored 43.3%, anchor-neutral 23.3%, drop the walk 85.0%,
+#     severity only 85.0%
+# The topology prior's direction depends on graph shape (SockShop's uniform
+# walk concentrates mass on leaf stores that are never injected; Boutique's
+# fans out from one entry), so neither walk variant transfers. severity_only
+# leads on BOTH corpora and is the only policy that does; the benchmark path
+# therefore defaults to it. The product default stays baseline_rrf with the
+# personalised walk, because a real incident's anchor is genuine signal and the
+# P4/P5 gates exist to stop a lone spike winning on its own. The earlier
+# "anchor-neutral is the principled cold-ranking default" claim was a
+# single-corpus conclusion and is retracted (see output/replication-*/RESULTS.md).
+BENCHMARK_RANK_POLICY = "severity_only"
 MAX_K = 5
 PROTOCOL = "re2ob-offline-fullscope-frontend-retained-traces-v2"
+# NOTE (known imbalance, 2026-10-19): these caps were authored when P1 admitted
+# ~1.8k spans and ~2.1k observations per case. Unused-quota redistribution and
+# onset sampling now admit ~6k spans and ~4k more observations, so the agent
+# path spends its 200k token budget on the largest cases (12 services x several
+# calls) and later branches fail with BudgetExceeded. Rank-only runs are
+# unaffected. Fixing this means sizing the budget from admitted evidence (or
+# bounding bundle volume), which is a cost-policy change needing its own
+# predeclared comparison; tracked, not silently bumped.
+def envelope_token_bound(max_llm_calls: int, bundle_token_cap: int = tuning.BUNDLE_TOKEN_CAP,
+                         max_output_tokens: int = 4_096, framing_tokens: int = 1_000) -> int:
+    """Tokens the allowed number of calls can consume, per call, worst case.
+
+    The per-case token cap exists to bound cost, but it must not be *smaller*
+    than what the call and visit caps already permit: when it is, the run stops
+    mid-investigation and whole cases fail with BudgetExceeded. Consumption per
+    call is bounded by the bundle cap (input), the largest requested output and
+    a framing allowance (prompt + schema), so the envelope is simply
+    `max_llm_calls x per-call bound`. Calls and wall clock remain the real
+    constraints; this is the safety net that makes them coherent.
+    """
+    if min(max_llm_calls, bundle_token_cap, max_output_tokens, framing_tokens) < 0:
+        raise ValueError("envelope inputs must be nonnegative")
+    return max_llm_calls * (bundle_token_cap + max_output_tokens + framing_tokens)
+
+
+def benchmark_budget(budget: InvestigationBudget | None = None) -> InvestigationBudget:
+    """The benchmark harness budget: same caps, coherent token envelope."""
+    budget = budget or InvestigationBudget()
+    return replace(budget, max_tokens=envelope_token_bound(budget.max_llm_calls))
+
+
 BENCH_BUDGET = InvestigationBudget()
 CLASS_ORDER = ("cpu", "mem", "io", "socket", "delay", "loss")
 ROOT = Path(__file__).resolve().parents[3]
@@ -83,14 +144,31 @@ def provenance():
             "sampler_version": adapter.SAMPLER_VERSION, "export_version": "validated-p2-shadow-v2",
             "evaluator_version": "named-universes-v2", "seed": 0, "concurrency": 1,
             "cache_mode": "none", "provider": {"requested_model": None, "returned_model": None,
-            "tokenizer": "not_used_offline"}, "budget": BENCH_BUDGET.as_dict(),
+            "tokenizer": "not_used_offline"}, "budget": benchmark_budget().as_dict(),
+            "budget_basis": "caps bounded by max_llm_calls x (bundle cap + max output + framing); "
+                            "calls and wall clock are the real constraints",
             "db_image": os.environ.get("EVAL_DB_IMAGE", "unknown"), "db_version": "unknown"}
 
 
+def default_anchor(entities) -> str:
+    """Entry service when present, else the first entity deterministically."""
+    names = set(entities)
+    for name in ENTRY_SERVICE_NAMES:
+        if name in names:
+            return f"service:{name}"
+    return f"service:{sorted(names)[0]}"
+
+
+def suite_of(case):
+    """Suite prefix of a case directory name, or None when unrecognised."""
+    return next((prefix for prefix in SUITE_PREFIXES if case.startswith(prefix)), None)
+
+
 def parse_case_name(case):
-    if not re.fullmatch(r"re2ob_[A-Za-z0-9-]+_(cpu|mem|disk|socket|delay|loss)_[0-9]+", case):
+    if not re.fullmatch(r"re2(?:ob|ss|tt)_[A-Za-z0-9-]+_(cpu|mem|disk|socket|delay|loss)_[0-9]+", case):
         raise ValueError(f"unexpected case name: {case}")
-    return tuple(case[len(CASE_PREFIX):].rsplit("_", 2))
+    prefix = suite_of(case)
+    return tuple(case[len(prefix):].rsplit("_", 2))
 
 
 def discover_cases(data_dir, subset=None, cases=None):
@@ -103,7 +181,8 @@ def discover_cases(data_dir, subset=None, cases=None):
         index = json.loads((data_dir / "_subset.json").read_text())["selected"]
         # Missing requested directories must reach run_case and count as failures.
         return [data_dir / name for name in index[:subset]]
-    return sorted(path for path in data_dir.iterdir() if path.is_dir() and path.name.startswith(CASE_PREFIX))
+    return sorted(path for path in data_dir.iterdir()
+                  if path.is_dir() and suite_of(path.name) is not None)
 
 
 def export_ranks(ranking, fused=None, policy="p2"):
@@ -204,14 +283,15 @@ def _set_universes(result, universes):
 def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=None,
              run_id=None, export_policy="p2", graph_factory=None, db_factory=None,
              budget=None, fusion_options=None, primary_branches=None,
-             minimum_primary_coverage=None, rank_policy=tuning.P2_RANK_POLICY):
+             minimum_primary_coverage=None, rank_policy=BENCHMARK_RANK_POLICY,
+             anchor_service: str | None = None):
     case_dir, report_dir = Path(case_dir), Path(report_dir)
     run_id = run_id or uuid.uuid4().hex
     graph_name = f"incidentgraph:session:eval-{run_id}-{uuid.uuid4().hex}"
     result = _failed_case_result(case_dir, RuntimeError("pending"))
     result.update(run_id=run_id, session_graph=graph_name, rank_policy=rank_policy,
                   rank_policy_version=tuning.P2_RANK_POLICY_VERSION)
-    meter = BudgetMeter(budget or BENCH_BUDGET)
+    meter = BudgetMeter(budget or benchmark_budget())
     created, db, start, stage = False, None, time.monotonic(), "load"
     try:
         validate_rank_policy(rank_policy)
@@ -222,8 +302,14 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
         loaded = adapter.load_case(graph, case_dir)
         result.update(counts=loaded["counts"], sample_diagnostics=loaded["sample_diagnostics"],
                       aggregate_diagnostics=loaded["aggregate_diagnostics"])
+        # The anchor is a cold-ranking placeholder here (no symptom exists), but
+        # it must exist in scope: `random_walk` requires it, and P4 compares
+        # levels against it. Default to the corpus entry service, else the first
+        # entity deterministically, and record which was used.
+        anchor = anchor_service or default_anchor(loaded["entities"])
+        result["anchor_service"] = anchor
         investigation = Investigation(incident_id=loaded["incident_id"], session_graph=graph_name,
-            symptom="benchmark case (cold ranking)", anchor_service="service:frontend", budget={},
+            symptom="benchmark case (cold ranking)", anchor_service=anchor, budget={},
             window=InvestigationWindow(t0=loaded["t0_ms"], t1=loaded["t1_ms"]),
             onset_ts=loaded.get("onset_ts"))
         stage = "p1_p2"
@@ -245,7 +331,8 @@ def run_case(case_dir, report_dir, with_agent=False, llm=None, *, llm_factory=No
             return scope_investigation(inv, full_scope=True, max_nodes=10_000, max_series=10_000,
                                        settings=SCOPE_BENCHMARK_SETTINGS)
         def benchmark_p2(inv, scoped):
-            ranked = rank_investigation(inv, scoped, rank_policy=rank_policy)
+            ranked = rank_investigation(inv, scoped, rank_policy=rank_policy,
+                                        case_anchor=False)
             if primary_branches is not None:
                 ranked.branch_ids = ranked.branch_ids[:primary_branches]
             return ranked
@@ -357,7 +444,7 @@ def aggregate_resources(results):
 
 
 def run(data_dir, subset=None, cases=None, report_dir="output/rcaeval-v2", with_agent=False,
-        llm=None, *, llm_factory=None, export_policy="p2", rank_policy=tuning.P2_RANK_POLICY):
+        llm=None, *, llm_factory=None, export_policy="p2", rank_policy=BENCHMARK_RANK_POLICY):
     validate_rank_policy(rank_policy)
     data_dir, root = Path(data_dir), Path(report_dir)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:10]
@@ -396,7 +483,14 @@ def run(data_dir, subset=None, cases=None, report_dir="output/rcaeval-v2", with_
             atomic_json(out/f"{safe_name}{suffix}.record.json", result)
         results.append(result)
         print(f"{path.name}: {result['status']} rank={result['gt_service_rank']}", flush=True)
-        atomic_json(out/"_checkpoint.json", {"run_id": run_id, "completed": len(results), "cases": results})
+        # Names and statuses only. The full results already live in each
+        # case's .record.json, and duplicating them here costs ~11 MB per case
+        # at the current scope size - rewritten after every case, so peak usage
+        # doubles. That filled the disk and killed the database mid-run, which
+        # is why this file is now a progress marker, not a second store.
+        atomic_json(out/"_checkpoint.json", {"run_id": run_id, "completed": len(results),
+            "cases": [{"case": row["case"], "status": row["status"],
+                       "gt_service_rank": row.get("gt_service_rank")} for row in results]})
     failed = sum(r["status"] != "ok" for r in results)
     summary = {"schema_version": 2, "run_id": run_id, "protocol": PROTOCOL,
         "mode": "agent_shadow" if with_agent else "p2_offline", "n_cases": len(results),

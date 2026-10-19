@@ -199,7 +199,8 @@ def test_adapter_normal_logs_period_template_volume_errors_and_source_precision(
     captured = {}
     monkeypatch.setattr(adapter, '_write_nodes', lambda graph, label, rows: captured.setdefault(label, rows))
     monkeypatch.setattr(adapter, '_write_edges', lambda *args: None)
-    result = adapter.load_case(SimpleNamespace(query=lambda *args, **kwargs: None), tmp_path)
+    result = adapter.load_case(SimpleNamespace(query=lambda *args, **kwargs: None), tmp_path,
+                               topology_path=adapter.OB_TOPOLOGY)  # synthetic fixture, not a real case name
     plain = [r for r in captured['LogEvent'] if not r['is_error']]
     assert len(plain) == adapter.LOG_SAMPLE_PER_SERVICE
     assert any(r['ts'] < 100000 for r in plain) and any(r['ts'] >= 100000 for r in plain)

@@ -52,14 +52,15 @@ def test_success_policy_forwarding_and_persisted_provenance(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "_data_provenance", lambda p: {})
     monkeypatch.setattr(runner.adapter, "load_case", lambda *a: {
         "incident_id": "policy", "t0_ms": 0, "t1_ms": 2, "counts": {},
+        "entities": ["frontend"],  # load_case always reports telemetry entities
         "sample_diagnostics": {}, "aggregate_diagnostics": {}, "window_frame": None})
     scope = ScopeResult(incident_id="policy", anchor_service="service:frontend",
         window={"t0": 0, "t1": 2}, services=[ScopeService(id="service:frontend")],
         nodes=[{"id": "service:frontend", "type": "Service", "properties": {}}],
         edges=[], evidence_gaps=[], n_series_in_scope=0, truncated=False)
     calls = []
-    def rank(inv, scoped, *, rank_policy):
-        calls.append(rank_policy)
+    def rank(inv, scoped, *, rank_policy, case_anchor=None):
+        calls.append((rank_policy, case_anchor))
         return rank_candidates(scoped, rank_policy=rank_policy)
     monkeypatch.setattr(runner, "rank_investigation", rank)
     def execute(*a, phase_functions, **kw):
@@ -76,7 +77,8 @@ def test_success_policy_forwarding_and_persisted_provenance(tmp_path, monkeypatc
     result = runner.run_case(case, tmp_path / "out", rank_policy=policy,
                             graph_factory=lambda n: object(), db_factory=lambda: db)
     assert result["status"] == "ok"
-    assert calls == [policy]
+    # The benchmark declares its scope cold: the anchor is not case-derived.
+    assert calls == [(policy, False)]
     stored = json.loads((tmp_path / "out" / f"{case.name}.record.json").read_text())
     assert stored["rank_policy"] == policy
     assert stored["artifacts"]["ranking"]["config"]["rank_policy"] == policy
@@ -131,3 +133,24 @@ def test_eval_fixture_policy_and_replay_policy_are_independent(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["eval", "--replay", "frozen.json", "--policy", "shadow"])
     assert cli.main() == 0
     assert forwarded[0][-2:] == ["--policy", "shadow"]
+
+
+def test_checkpoint_writer_stores_progress_not_records():
+    """Regression for the disk-fill that killed the database mid-run.
+
+    Full case results are ~11 MB each at the current scope size and the
+    checkpoint is rewritten after every case, so embedding them doubled peak
+    disk usage. The writer must stay a progress marker; the durable per-case
+    records are the single source of truth.
+    """
+    import inspect
+    from backend.app.eval import rcaeval_runner as rr
+
+    source = inspect.getsource(rr.run)
+    start = source.index('atomic_json(out/"_checkpoint.json"')
+    # Scope the assertion to the checkpoint call itself; the run summary later
+    # in the function legitimately embeds the full results.
+    end = source.index("for row in results]", start) + len("for row in results]")
+    block = source[start:end]
+    assert 'row["case"]' in block and 'row["status"]' in block
+    assert '"cases": results' not in block

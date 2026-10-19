@@ -1,0 +1,214 @@
+{
+  "_provenance": "Authored SockShop topology for the RCAEval RE2-SS adapter. The entity list is exactly the union of telemetry column prefixes and log container names observed in the dataset (carts..front-end, their -db companions, rabbitmq, queue-master, rabbitmq-exporter). Edges follow the public SockShop architecture (weaveworks/microservices-demo): basis=published_architecture marks external knowledge, basis=db_naming marks a structural inference from the telemetry naming ('<service>-db' backing '<service>'). RE2-SS ships NO traces, so unlike RE2-OB this graph cannot be derived from parent/child span pairs. rabbitmq-exporter scrapes the queue rather than calling it, so it is deliberately left without DEPENDS_ON edges (the same treatment RE2-OB gives istio-init): it therefore receives no certified level and the P4 veto reports 'authoritative level unavailable' for it. No benchmark labels (fault service, fault type, instance) are used anywhere in this file. Levels are shortest-path depths from the call roots - the same derivation the adapter certifies against (`dependency_depths`) - and every edge was checked to be non-decreasing, so the P4 level veto never rules out a physically valid direction.",
+  "services": [
+    {
+      "id": "service:carts",
+      "name": "carts",
+      "aliases": [
+        "cartservice",
+        "cart"
+      ],
+      "criticality": 0.85,
+      "level": 1
+    },
+    {
+      "id": "service:carts-db",
+      "name": "carts-db",
+      "aliases": [],
+      "criticality": 0.5,
+      "level": 2
+    },
+    {
+      "id": "service:catalogue",
+      "name": "catalogue",
+      "aliases": [
+        "catalogservice",
+        "productcatalog"
+      ],
+      "criticality": 0.8,
+      "level": 1
+    },
+    {
+      "id": "service:catalogue-db",
+      "name": "catalogue-db",
+      "aliases": [],
+      "criticality": 0.5,
+      "level": 2
+    },
+    {
+      "id": "service:front-end",
+      "name": "front-end",
+      "aliases": [
+        "frontend",
+        "frontendservice",
+        "web",
+        "ui"
+      ],
+      "criticality": 0.95,
+      "level": 0
+    },
+    {
+      "id": "service:orders",
+      "name": "orders",
+      "aliases": [
+        "orderservice"
+      ],
+      "criticality": 0.9,
+      "level": 1
+    },
+    {
+      "id": "service:orders-db",
+      "name": "orders-db",
+      "aliases": [],
+      "criticality": 0.5,
+      "level": 2
+    },
+    {
+      "id": "service:payment",
+      "name": "payment",
+      "aliases": [
+        "paymentservice"
+      ],
+      "criticality": 0.8,
+      "level": 1
+    },
+    {
+      "id": "service:queue-master",
+      "name": "queue-master",
+      "aliases": [],
+      "criticality": 0.6,
+      "level": 2
+    },
+    {
+      "id": "service:rabbitmq",
+      "name": "rabbitmq",
+      "aliases": [
+        "queue"
+      ],
+      "criticality": 0.6,
+      "level": 3
+    },
+    {
+      "id": "service:rabbitmq-exporter",
+      "name": "rabbitmq-exporter",
+      "aliases": [],
+      "criticality": 0.3,
+      "level": 0
+    },
+    {
+      "id": "service:session-db",
+      "name": "session-db",
+      "aliases": [],
+      "criticality": 0.5,
+      "level": 2
+    },
+    {
+      "id": "service:shipping",
+      "name": "shipping",
+      "aliases": [
+        "shippingservice"
+      ],
+      "criticality": 0.75,
+      "level": 1
+    },
+    {
+      "id": "service:user",
+      "name": "user",
+      "aliases": [
+        "userservice",
+        "accounts"
+      ],
+      "criticality": 0.8,
+      "level": 1
+    },
+    {
+      "id": "service:user-db",
+      "name": "user-db",
+      "aliases": [],
+      "criticality": 0.5,
+      "level": 2
+    }
+  ],
+  "depends_on": [
+    {
+      "from": "service:front-end",
+      "to": "service:carts",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:front-end",
+      "to": "service:catalogue",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:front-end",
+      "to": "service:orders",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:front-end",
+      "to": "service:user",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:front-end",
+      "to": "service:payment",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:front-end",
+      "to": "service:shipping",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:orders",
+      "to": "service:carts",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:orders",
+      "to": "service:payment",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:orders",
+      "to": "service:shipping",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:orders",
+      "to": "service:orders-db",
+      "basis": "db_naming"
+    },
+    {
+      "from": "service:orders",
+      "to": "service:queue-master",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:queue-master",
+      "to": "service:rabbitmq",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:carts",
+      "to": "service:carts-db",
+      "basis": "db_naming"
+    },
+    {
+      "from": "service:carts",
+      "to": "service:session-db",
+      "basis": "published_architecture"
+    },
+    {
+      "from": "service:catalogue",
+      "to": "service:catalogue-db",
+      "basis": "db_naming"
+    },
+    {
+      "from": "service:user",
+      "to": "service:user-db",
+      "basis": "db_naming"
+    }
+  ]
+}

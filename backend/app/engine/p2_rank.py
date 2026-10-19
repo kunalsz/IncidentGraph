@@ -12,8 +12,21 @@ def validate_rank_policy(rank_policy):
     return rank_policy
 
 
-def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) -> RankResult:
+def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY,
+                    case_anchor: bool | None = None) -> RankResult:
+    """Rank scoped candidates.
+
+    `case_anchor` is the caller's declaration of whether the scope's anchor is
+    case-derived (`True` for a real alert/symptom, `False` for cold ranking,
+    `None` when the caller has not declared). It never silently changes the
+    policy: it only labels the prior actually used and warns when an anchored
+    prior runs with no case anchor, so a meaningless constant prior cannot pass
+    unnoticed through an artifact (research: proximity to a symptom is not
+    causation - CORAL; centrality-only priors collapse as standalone rankers -
+    GALA Table 1).
+    """
     validate_rank_policy(rank_policy)
+    anchorless = rank_policy == "rrf_anchor_neutral"
     ids = [service.id for service in scope.services]
     nodes = {node["id"]: node for node in scope.nodes}
     observations = []
@@ -22,9 +35,7 @@ def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) ->
                 and edge["source"] in nodes):
             observations.append({**nodes[edge["source"]], "service_id": edge["target"]})
     latency = latency_scores(ids, observations, scope.edges)
-    # Cold ranking (benchmark) has no case-derived anchor; the anchored walk
-    # would then be a constant prior, so it is opt-in via the policy name.
-    mass = (neutral_walk(ids, scope.edges) if rank_policy == "rrf_anchor_neutral"
+    mass = (neutral_walk(ids, scope.edges) if anchorless
             else random_walk(ids, scope.edges, scope.anchor_service))
     components = {}
     flags = {sid: [] for sid in ids}
@@ -82,19 +93,34 @@ def rank_candidates(scope: ScopeResult, *, rank_policy=tuning.P2_RANK_POLICY) ->
                 "rwr_iterations": tuning.RWR_ITERATIONS, "top_k": tuning.TOP_K_CANDIDATES,
                 "walk_direction": "caller_to_dependency", "tie_policy": "average_rank",
                 "missing_signal": "excluded", "latency_source": "scoped_service_spans",
-                "correlation_pruning": "unavailable_without_aligned_raw_series"},
+                "correlation_pruning": "unavailable_without_aligned_raw_series",
+                "anchor_source": {True: "case", False: "none", None: "undeclared"}[case_anchor],
+                "rwr_prior": "anchorless_uniform" if anchorless else "personalized",
+                # Only warn when the anchored prior actually votes: severity_only
+                # gives rwr zero weight, so no anchored prior is in play there.
+                "anchor_prior_warning": (None if anchorless or not weights["rwr"]
+                                         or case_anchor is not False
+                                         else "anchored rwr prior with no case-derived anchor")},
     )
 
 
 def rank_investigation(investigation: Investigation, scope: ScopeResult, *,
-                       rank_policy=tuning.P2_RANK_POLICY) -> RankResult:
+                       rank_policy=tuning.P2_RANK_POLICY,
+                       case_anchor: bool | None = None) -> RankResult:
+    """Rank and persist the stage view; `case_anchor` comes from the driver.
+
+    Only the driver knows whether the anchor was derived from this case: P0
+    always derives one from an alert or a symptom, while the benchmark harness
+    fixes it to an entry service. Undeclared (`None`) keeps the historical
+    behaviour and claims nothing.
+    """
     if not investigation.session_graph.startswith("incidentgraph:session:"):
         raise ValueError("P2 requires an isolated session graph")
     if (scope.incident_id != investigation.incident_id
             or scope.anchor_service != investigation.anchor_service
             or scope.window != investigation.window):
         raise ValueError("scope does not match investigation")
-    result = rank_candidates(scope, rank_policy=rank_policy)
+    result = rank_candidates(scope, rank_policy=rank_policy, case_anchor=case_anchor)
     graph_for(investigation.session_graph).query(
         "MERGE (a:Artifact {id: $id}) "
         "SET a.kind = 'stage-view', a.stage = 'strix', a.version = 2, "

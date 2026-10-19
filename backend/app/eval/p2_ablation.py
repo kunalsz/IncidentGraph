@@ -65,7 +65,10 @@ def load_records(run_dir, cases=None):
     for path in sorted(run_dir.glob("*.record.json")):
         records.append(json.loads(path.read_text()))
     if not records and (run_dir / "_checkpoint.json").is_file():
-        records = list(json.loads((run_dir / "_checkpoint.json").read_text()).get("cases", []))
+        entries = list(json.loads((run_dir / "_checkpoint.json").read_text()).get("cases", []))
+        # Legacy checkpoints embedded full results; current ones are progress
+        # markers, so only keep entries that actually carry a ranking artifact.
+        records = [entry for entry in entries if isinstance(entry, dict) and entry.get("artifacts")]
     if cases is not None:
         wanted = set(cases)
         records = [r for r in records if r.get("case") in wanted]
