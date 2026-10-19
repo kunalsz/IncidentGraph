@@ -13,19 +13,26 @@ from pathlib import Path
 _LOADED = False
 
 
+def default_env_path() -> Path:
+    """`<repo root>/.env`. This module lives at backend/app/envfile.py, so the
+    repository root is two levels up, not three (a three-level path pointed one
+    directory above the checkout, which silently meant `.env` was never read)."""
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
 def load_env_file(path: str | None = None) -> None:
     """Load .env into os.environ (never overriding set variables).
 
     A default-location load happens once per process; an explicit `path` is
-    always re-read (tests use this).
+    always re-read (tests use this). CLI scripts, `make` targets and the test
+    suite all rely on the default resolving to the repository root.
     """
     global _LOADED
     if _LOADED and path is None:
         return
     if path is None:
         _LOADED = True
-    candidates = ([Path(path)] if path else
-                  [Path(__file__).resolve().parents[3] / ".env"])
+    candidates = ([Path(path)] if path else [default_env_path()])
     for candidate in candidates:
         if not candidate.is_file():
             continue

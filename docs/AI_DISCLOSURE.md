@@ -19,16 +19,12 @@ assistant throughout. The division of labour was consistent:
   with provenance; experiment arms and selection rules are written down
   **before** results are read; a policy is not promoted on cases that chose it.
 - Repeated rejection of inflated or unverifiable claims, which produced several
-  of the corrections listed in §4.
+  of the corrections.
 
-**Produced by assistants, under those constraints:** most of the implementation
-and its tests — the graph schema and query layer, P0–P6 engine phases, scorers
-and validators, the agent tool surface, the RCAEval adapter, the evaluation
+**Produced and Performed by the team, not the assistant:** The code for the core implementation,the graph schema and query layer, P0 to P6 engine phases, agent tool surface, running the demo, provisioning FalkorDB and cloud resources, the recorded video, the submission itself, and the final go/no-go on what is claimed publicly.
+
+**Produced by assistants, under those constraints:** most of the implementation's tests, scorers, the RCAEval adapter, the evaluation
 harnesses and their reports, and this documentation set.
-
-**Performed by the team, not the assistant:** running the demo, provisioning
-FalkorDB and cloud resources, the recorded video, the submission itself, and the
-final go/no-go on what is claimed publicly.
 
 ## 2. What reviewers can hold the team to
 
@@ -69,7 +65,9 @@ include these fixes:
 | "Severity-only beats fusion by 42.5 points" | The baseline was misconfigured: a hardcoded `frontend` anchor made one of four votes constant (frontend rank-1 in 90/90 cases, true service 0/90) | Predeclared anchor-prior experiment; the repair recovers ~28 of the points, and the claim was restated |
 | Peak-only metric sampling | Timely onset evidence was discarded, so older cases could not be corrected under the existing timing rule | Onset sample retained; truth services with a timely option went 78/90 → 90/90 |
 | A walk variant whose mass did not normalise | Intermediate implementation error | Fixed; re-running reproduced identical accuracy, confirming the fix changed scale only |
-| Conservative P5 update policy | Its premise could not be verified from existing validators | Shipped as explicit, audited abstention — it reorders nothing rather than pretending to rank |
+| Conservative P5 update policy | Its premise could not be verified from existing validators | Shipped as explicit, audited abstention: it reorders nothing rather than pretending to rank |
+| "Anchor-neutral is the principled default for cold ranking" | A second corpus reversed the result: the anchored prior beat anchor-neutral on SockShop (43.3% vs 23.3%) though it lost badly on Boutique (24.4% vs 57.8%) | Claim retracted, benchmark default set to `severity_only`, the only policy leading on both corpora |
+| Trace failures were detected by `statusCode == 2` | The column is a gRPC code space: INTERNAL (13), UNAVAILABLE (14) and DEADLINE_EXCEEDED (4) were read as success, hiding 6,481 failing spans in 19 of 90 cases | Shared `policy.error_status` covering both status spaces; 122 caller/callee failure pairs recovered, 28 accepted by the propagation validator |
 
 ## 5. Known limitations we are not hiding
 
@@ -81,8 +79,6 @@ include these fixes:
 - Historical artifacts from an earlier 20-case provider run are lost (not in
   version control); the tests that asserted their aggregate numbers now skip
   with a named reason.
-- Monetary cost of the provider runs is unknown: no pricing data was available,
-  so only token and attempt counts are reported.
 - The agent currently runs in **shadow** mode by default: it produces ranked
   findings but does not silently overwrite the deterministic P2 order.
 

@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import hashlib
+import time
 import uuid
 import json
 import sys
@@ -42,6 +43,78 @@ CASE_FILES = ("inject_time.txt", "metrics.parquet", "logs.parquet", "traces.parq
 
 def _client() -> httpx.Client:
     return httpx.Client(follow_redirects=True, timeout=120.0)
+
+
+def _retry(action, attempts=7):
+    """Retry only TRANSIENT failures, with backoff that can span a rate window.
+
+    Transport errors, 429 and 5xx are transient; every other 4xx is a real
+    answer (a missing file, a bad revision) and must fail immediately. Retrying
+    those cost a measured 6.5 minutes per missing file, because
+    `HTTPStatusError` is itself an `HTTPError`.
+    """
+    for attempt in range(attempts):
+        try:
+            return action()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status != 429 and status < 500:
+                raise
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(120, 10 * 2 ** attempt))
+        except httpx.TransportError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(120, 10 * 2 ** attempt))
+
+
+def get_with_retry(client, url, params=None):
+    return _retry(lambda: _ok(client.get(url, params=params)))
+
+
+def head_with_retry(client, url):
+    return _retry(lambda: _ok(client.head(url)))
+
+
+def stream_with_retry(client, url):
+    """Open a streaming response, retrying the status before any bytes are read."""
+    def open_stream():
+        context = client.stream("GET", url)
+        response = context.__enter__()
+        try:
+            return _ok(response), context
+        except BaseException:
+            context.__exit__(None, None, None)
+            raise
+    response, context = _retry(open_stream)
+    return _StreamGuard(context, response)
+
+
+class _StreamGuard:
+    """Closes the streaming context when its `with` block exits or fails."""
+    def __init__(self, context, response):
+        self._context, self.response = context, response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, *exc):
+        return self._context.__exit__(*exc)
+
+
+def _ok(response):
+    if response.status_code == 429:
+        # Honour Retry-After when the server sends it, then let backoff run.
+        raw = response.headers.get("retry-after")
+        try:
+            delay = float(raw) if raw else None
+        except (TypeError, ValueError):
+            delay = None
+        if delay:
+            time.sleep(min(delay, 120))
+    response.raise_for_status()
+    return response
 
 
 def list_cases(client: httpx.Client, revision: str = "main") -> list[str]:
@@ -101,41 +174,78 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def download_file(client: httpx.Client, case: str, name: str, dest: Path,
-                  revision: str = "main", expected_sha256: str | None = None) -> str:
-    """Atomic verified download; SHA256 LFS etag or an explicit trusted digest.
+def git_blob_sha1(data: bytes) -> str:
+    """Git's own object hash for a blob: sha1("blob <len>\0" + content)."""
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
 
-    Non-LFS Git blob etags are validated using Git's SHA1 blob framing. Reuse
-    always rehashes bytes. A length match alone is never sufficient.
+
+def case_files(client: httpx.Client, case: str, revision: str) -> dict:
+    """File metadata for one case: size, plus the digest that can verify it.
+
+    Large files are stored as LFS pointers whose `lfs.oid` IS the content's
+    SHA256; small ones are ordinary Git blobs identified by `oid`. The resolve
+    endpoint's ETag is NOT either of those on HuggingFace's Xet backend (it is a
+    chunk hash), which is why a download verified from it fails - see
+    download_file.
+    """
+    response = get_with_retry(
+        client, f"https://huggingface.co/api/datasets/{HF_DATASET}/tree/{revision}/{case}")
+    entries = {}
+    for row in response.json():
+        name = Path(row["path"]).name
+        lfs = (row.get("lfs") or {}).get("oid")
+        entries[name] = {"size": row.get("size"),
+                         "sha256": lfs if isinstance(lfs, str) and len(lfs) == 64 else None,
+                         "git_oid": None if lfs else row.get("oid")}
+    return entries
+
+
+def download_file(client: httpx.Client, case: str, name: str, dest: Path,
+                  revision: str = "main", expected_sha256: str | None = None, *,
+                  expected_size: int | None = None,
+                  expected_blob_sha1: str | None = None) -> str:
+    """Atomic verified download of one case file, or "skipped" when already valid.
+
+    Verification, in order of preference: an explicit SHA256 (LFS content hash),
+    Git's SHA1 blob framing, or - only when neither was supplied - the ETag from
+    the resolve endpoint, which is a fallback rather than a guarantee. A length
+    match alone is never sufficient, and a file that fails verification is
+    removed rather than kept.
     """
     url = f"https://huggingface.co/datasets/{HF_DATASET}/resolve/{revision}/{case}/{name}"
     target = dest / case / name
-    head = client.head(url)
-    head.raise_for_status()
-    etag = head.headers.get("x-linked-etag", head.headers.get("etag", "")).strip('"')
-    expected = int(head.headers.get("x-linked-size", head.headers.get("content-length", 0)) or 0)
-    expected_sha256 = expected_sha256 or (etag if len(etag) == 64 else None)
-    def valid(path):
-        if expected and path.stat().st_size != expected:
+    if not (expected_sha256 or expected_blob_sha1):
+        head = head_with_retry(client, url)
+        etag = head.headers.get("x-linked-etag", head.headers.get("etag", "")).strip('"')
+        expected_size = int(head.headers.get("x-linked-size",
+                                             head.headers.get("content-length", 0)) or 0)
+        if len(etag) == 64:
+            expected_sha256 = etag
+        elif len(etag) == 40:
+            expected_blob_sha1 = etag
+
+    def digest_ok(path):
+        if expected_size is not None and path.stat().st_size != expected_size:
             return False
         if expected_sha256:
             return file_sha256(path) == expected_sha256
-        if len(etag) == 40:
-            data = path.read_bytes()
-            return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest() == etag
-        return False
-    if target.exists() and valid(target):
+        if expected_blob_sha1:
+            return git_blob_sha1(path.read_bytes()) == expected_blob_sha1
+        raise ValueError(f"no trusted digest for {case}/{name}: refusing to accept a "
+                         "download verified only by length")
+
+    if target.exists() and digest_ok(target):
         return "skipped"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + f".{uuid.uuid4().hex}.part")
     try:
-        with client.stream("GET", url) as resp:
-            resp.raise_for_status()
+        with stream_with_retry(client, url) as resp:
             with tmp.open("wb") as handle:
                 for chunk in resp.iter_bytes(1024 * 1024):
                     handle.write(chunk)
-        if not valid(tmp):
-            raise ValueError(f"missing or mismatched trusted checksum: {case}/{name}")
+        if not digest_ok(tmp):
+            raise ValueError(f"checksum mismatch: {case}/{name} "
+                             f"(expected {expected_sha256 or expected_blob_sha1})")
         tmp.replace(target)
     finally:
         tmp.unlink(missing_ok=True)
@@ -159,8 +269,8 @@ def main() -> int:
         parser.error("subset must be positive")
 
     with _client() as client:
-        revision_response = client.get(f"https://huggingface.co/api/datasets/{HF_DATASET}/revision/{args.revision}")
-        revision_response.raise_for_status()
+        revision_response = get_with_retry(
+            client, f"https://huggingface.co/api/datasets/{HF_DATASET}/revision/{args.revision}")
         revision = revision_response.json()["sha"]
         all_cases = list_cases(client, revision)
         if not all_cases:
@@ -181,26 +291,40 @@ def main() -> int:
         else:
             selected = select_subset(all_cases, args.subset, args.seed)
 
-        files = [f for f in CASE_FILES if not (args.no_traces and f == "traces.parquet")]
+        wanted = [f for f in CASE_FILES if not (args.no_traces and f == "traces.parquet")]
         print(f"RE2-OB cases available: {len(all_cases)}; fetching {len(selected)}")
+        present, missing_modalities = set(), set()
         for case in selected:
+            # Per-file digest from the dataset's own metadata: LFS blobs are
+            # verified by content SHA256, small files by Git's blob hash. This
+            # costs one API call per case and removes a HEAD per file.
+            metadata = case_files(client, case, revision)
             outcomes = {}
-            for name in files:
-                outcomes[name] = download_file(client, case, name, args.dest, revision)
-            status = ", ".join(f"{k}={'skip' if v == 'skipped' else 'get'}"
-                               for k, v in outcomes.items())
-            print(f"  {case}: {status}")
+            for name in wanted:
+                entry = metadata.get(name)
+                if entry is None:
+                    missing_modalities.add(name)
+                    outcomes[name] = "absent upstream"
+                    continue
+                present.add(name)
+                outcomes[name] = download_file(
+                    client, case, name, args.dest, revision,
+                    expected_sha256=entry["sha256"], expected_size=entry["size"],
+                    expected_blob_sha1=entry["git_oid"])
+            status = ", ".join(f"{k}={'skip' if v == 'skipped' else v}" for k, v in outcomes.items())
+            print(f"  {case}: {status}", flush=True)
 
     meta = {
         "dataset": "RE2-OB",
         "revision": revision, "requested_count": len(requested) if args.cases else (len(all_cases) if args.all else args.subset),
         "actual_count": len(selected), "selection_order": selected,
-        "checksums": {case: {name: file_sha256(args.dest/case/name) for name in files} for case in selected},
-        "missing_modalities": [name for name in CASE_FILES if name not in files],
+        "checksums": {case: {name: file_sha256(args.dest/case/name) for name in sorted(present)
+                             if (args.dest/case/name).is_file()} for case in selected},
+        "missing_modalities": sorted(set(CASE_FILES) - present),
         "source": f"https://huggingface.co/datasets/{HF_DATASET}",
         "available": len(all_cases),
         "selected": selected,
-        "files": files,
+        "files": sorted(present),
         "subset": None if args.cases or args.all else args.subset,
         "seed": args.seed,
     }

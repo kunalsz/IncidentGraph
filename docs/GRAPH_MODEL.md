@@ -44,7 +44,7 @@ as `Artifact` nodes with their integrity handoffs.
 
 ## 2. Cypher the product depends on
 
-### 2.1 Scoped reads — one bounded pull per phase (`graph/queries.py`)
+### 2.1 Scoped reads: one bounded pull per phase (`graph/queries.py`)
 
 The scope read is the query the whole product hangs off: it fixes the candidate
 set, the topology, the in-window evidence and the changes, and it is the only
@@ -125,13 +125,13 @@ SET g.incident_id = $incident, g.node_id = $node_id, g.missing_kind = $kind,
 | P0 resolve | upsert `Incident`, link `Alert`→`Incident`, `AFFECTS` to services | `engine/p0_resolve.py:133,143` |
 | P0 linking | resolve entity by id/name/alias, abstain when unresolved | `engine/p0_resolve.py`, `ingest/normalize.py` |
 | Session isolation | copy the public graph into a private session graph per run; abort if the copy is incomplete | `graph/client.py`, `ingest/publication.py:61` |
-| Publication guard | `MERGE (p:Artifact {id: $marker_id}) SET p.source_hash = $generation` — detects live edits during a read | `ingest/publication.py:65` |
+| Publication guard | `MERGE (p:Artifact {id: $marker_id}) SET p.source_hash = $generation`, detects live edits during a read | `ingest/publication.py:65` |
 | P1 scope | the four scope reads above + stats/gap writes | `engine/p1_scope.py:278`, `graph/gateway.py` |
 | P2 rank | persist the ranking stage view as an `Artifact` (handoff) | `engine/p2_rank.py:93` |
 | P3 investigate | read the admitted scope snapshot, write `Hypothesis` nodes and `HAS_EVIDENCE` edges, `EXPANDED_TO` for expansion | `engine/p3_investigate.py` (6 sites) |
 | P4 validate | read hypothesis-owned evidence, persist `ValidatorRefute` evidence and `CONTRADICTS` edges | `engine/p4_validate.py` (5 sites) |
 | P5/P6 report | persist report artifact, incident `diagnostic_state`, final hypothesis decisions | `engine/p6_report.py:250,258,262,267` |
-| Agent tools (read-only) | neighbourhood, blast radius, severity vector, series history, error spans/logs, runbook + owner closure, anchor resolution, evidence by id — 20 bounded reads, all scope-bound | `agent/tools.py` |
+| Agent tools (read-only) | neighbourhood, blast radius, severity vector, series history, error spans/logs, runbook + owner closure, anchor resolution, evidence by id: 20 bounded reads, all scope-bound | `agent/tools.py` |
 | Path finding | expand `DEPENDS_ON` from a node, honouring `volatile`/`invariant` filters | `graph/pathfind.py:45` |
 | Seed / fixtures | MERGE nodes, MERGE edges, verify endpoint labels/round-trip | `seed/loader.py` (7 sites) |
 | Benchmark loader | batched `UNWIND $rows ... MERGE` for services, metric anomalies, logs, spans and their `OBSERVED_ON` edges | `eval/rcaeval_adapter.py` |
@@ -139,75 +139,91 @@ SET g.incident_id = $incident, g.node_id = $node_id, g.missing_kind = $kind,
 
 ## 3. Graph algorithms the product depends on
 
-**Personalized PageRank over `DEPENDS_ON`** — `graph/scorers.py:random_walk`.
+**Personalized PageRank over `DEPENDS_ON`**: `graph/scorers.py:random_walk`.
 Mass starts on the anchor; each of 20 iterations restarts at the anchor with
 φ=0.15 and pushes `(1−φ)·mass/out-degree` along caller→dependency edges; dead
 ends return their mass to the anchor. Feeds the `rwr` fusion component.
 
-**Anchor-neutral walk** — `scorers.py:neutral_walk` (added for cold ranking).
+**Anchor-neutral walk**: `scorers.py:neutral_walk` (added for cold ranking).
 Same propagation, but the restart is uniform `φ/n` and dead ends keep their own
-mass, so topology centrality is preserved without a privileged service. This
-matters because the benchmark has no case-derived symptom: with a hardcoded
-anchor the `rwr` component elected `frontend` in 90/90 archived cases and the
-true service was never its rank-1.
+mass, so topology centrality is preserved without a privileged service.
 
-**Reciprocal rank fusion** — `scorers.py:reciprocal_rank_fusion`. Per component
+**Which prior runs, and why: two corpora, not one.** The walk is meaningful
+only when the anchor is derived from the case (an alert or an operator's
+symptom); the product default keeps the personalised walk for exactly that
+reason. For cold benchmark ranking, where the anchor is an arbitrary entry
+service, measurements on two corpora decide the policy: Online Boutique favours
+the anchor-neutral walk over the anchored one (57.8% vs 24.4% AC@1) while
+SockShop reverses that (23.3% vs 43.3%), and `severity_only` leads on both
+(78.9% / 85.0%). A topology prior's direction therefore depends on graph shape:
+SockShop's uniform walk concentrates mass on leaf stores that are never injected,
+while Boutique's anchored walk votes for `frontend` in 90/90 cases. So the benchmark
+path defaults to `severity_only` and both walk variants remain explicit options.
+Raw numbers and the mechanism: `output/replication-2026-10-19/RESULTS.md`.
+The choice is recorded per ranking (`anchor_source`, `rwr_prior`), and an anchored
+policy on an undeclared/absent anchor is flagged (`anchor_prior_warning`) instead
+of being switched silently. The research agrees that proximity is not causation
+(CORAL: propagation, not adjacency, carries signal) and that topology-only priors
+collapse as standalone rankers (GALA Table 1: PageRank-only 15.6% AC@1), so
+centrality stays one fused vote among four, never a ranking term of its own.
+
+**Reciprocal rank fusion**: `scorers.py:reciprocal_rank_fusion`. Per component
 (`phi1`, `phi3`, `severity`, `rwr`, `deploy_proximity`), candidates with a
 positive value get `1/(ε + rank)` with ε=60 and *average* ranks for exact ties;
 non-positive values earn nothing. Three selectable policies
 (`config/tuning.py:P2_RANK_POLICIES`): `baseline_rrf` (default),
 `severity_only`, `rrf_anchor_neutral`.
 
-**Latency structure** — `scorers.py:latency_scores`, percentile interpolation
+**Latency structure**: `scorers.py:latency_scores`, percentile interpolation
 `scorers.py:percentile`. `phi1 = p99/p50` per service (dispersion);
 `phi3 = Σ duration × max(0, 1 − max(mean_callee_duration)/mean_self_duration)`,
-i.e. work not explained by the slowest callee — computed on the scoped span
+i.e. work not explained by the slowest callee, computed on the scoped span
 sample, deduplicated by span id.
 
-**Severity aggregation** — `engine/p1_scope.py:service_statistics`. Per modality
+**Severity aggregation**: `engine/p1_scope.py:service_statistics`. Per modality
 `sev = max |z|` over that service's admitted records; unscored records are
 reported as `unscored_*` gaps instead of zeros, so "not measured" is never read
 as "normal". Log/trace z and metric z now share one baseline policy (§ minute
 scoring), so no modality saturates below another.
 
-**Minute-level anomaly scoring** — `eval/rcaeval_adapter.py:_minute_stats`,
+**Minute-level anomaly scoring**: `eval/rcaeval_adapter.py:_minute_stats`,
 `_minute_score`. Per service and minute, count (or p95 latency) against the
 pre-injection minutes: measured spread scores a plain z; an unmeasured baseline
 uses the shared scale ladder (IQR → std → relative floor, one-count floor for
 count series) with a persistence guard, so a single quiet extra line is not an
 anomaly. The same ladder scores metric series (`eval/baseline_scale.py`).
 
-**Evidence path over the dependency DAG** — `graph/pathfind.py:find_evidence_path`.
+**Evidence path over the dependency DAG**: `graph/pathfind.py:find_evidence_path`.
 Bounded BFS from anchor to candidate (hop and node caps), skipping `volatile`
 edges and requiring `invariant != false`; abnormal nodes are visited first;
 path nodes get roles (`local_anomaly`, `propagation`, `context`) and each edge
 carries explicit `support` evidence ids. A found path is structural
-plausibility — never propagation proof.
+plausibility, never propagation proof.
 
-**Exclusive self-time** — `engine/p1_scope.py:_exclusive`. Interval-union
+**Exclusive self-time**: `engine/p1_scope.py:_exclusive`. Interval-union
 subtraction of direct-child span time from the parent span, marked `complete`
 only when the child query and the source trace are both proven complete;
 otherwise an upper bound is reported and the flag is suppressed.
 
-**Validators (deterministic vetoes)** — `graph/validators.py`:
+**Validators (deterministic vetoes)**: `graph/validators.py`:
 `level_veto` (reject a cause strictly shallower than its effect),
 `cycle_rejection` (a proposed cause→effect edge may not close a loop),
 `onset_alignment` (±300 s of onset), `svar_lite` (in-window excursion plus
 baseline-spread check and direction stability), `symptom_explanation`,
 `no_evidence_cap`, `chain_coherence`, `aggregate_verdict`, confidence caps.
 
-**Topology depth + safe certification** — `eval/rcaeval_adapter.py`:
+**Topology depth + safe certification**: `eval/rcaeval_adapter.py`:
 `dependency_depths` (BFS from services that call but are never called) and
 `authoritative_levels`, which certifies a service's authored level only when its
 whole weakly connected component is acyclic (Kahn) and has no edge whose BFS
-depth decreases — otherwise P4 reports "authoritative level unavailable" rather
+depth decreases; otherwise P4 reports "authoritative level unavailable" rather
 than trusting a number that could veto a physically valid direction.
 
-**Bounded trace sampling** — `eval/rcaeval_adapter.py:select_trace_sample`.
+**Bounded trace sampling**: `eval/rcaeval_adapter.py:select_trace_sample`.
 Deterministic round-robin over minute×pre/post×service strata, errors first
 within a stratum, seeded hashes for ties; whole trace groups only, never sliced.
 
-**Fusion-time hypothesis scoring (P5)** — `engine/p5_fuse.py`:
+**Fusion-time hypothesis scoring (P5)**: `engine/p5_fuse.py`:
 `H = 0.35·D + 0.25·R + 0.20·CC + 0.20·V` with D the rank-normalized P2 position,
 R the reflection blend, CC chain coherence, V the validator verdict; fixed
 stable-ID hypothesis slots per service; a failed check can never be talked back
